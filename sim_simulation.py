@@ -169,7 +169,7 @@ class sim():
         self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.out[indices[0], indices[1], :, :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
-    def sim_2d(self, nang=3, nph=3, I=1000, cocurrent_method='processpool'):
+    def sim_2d(self, nang=3, nph=3, I=1000):
         nx = self.nxh * 2
         ny = self.nxh * 2
         self.number_of_angles = nang
@@ -181,18 +181,12 @@ class sim():
         self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
         sz = self.number_of_angles * self.number_of_phases
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
-        if cocurrent_method == 'threadpool':
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                print(future.result())
-        if cocurrent_method == 'processpool':
-            with concurrent.futures.ProcessPoolExecutor() as executor:
-                futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                print(future.result())
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
+        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+            print(future.result())
 
-    def sim_3d(self, nang=3, nph=5, I=1000, cocurrent_method='processpool'):
+    def sim_3d(self, nang=3, nph=5, I=1000):
         nx = self.nxh * 2
         ny = self.nxh * 2
         nz = self.nzh * 2
@@ -208,17 +202,10 @@ class sim():
         sz = self.number_of_angles * self.number_of_phases * nz
         self.out = np.zeros((self.number_of_angles, self.number_of_phases, nz, nx, ny))
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
-        if cocurrent_method == 'threadpool':
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                futures = [executor.submit(self._get_one_img_3d, indices) for indices in indices_list]
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                print(future.result())
-        if cocurrent_method == 'processpool':
-            with concurrent.futures.ProcessPoolExecutor() as executor:
-                futures = [executor.submit(self._get_one_img_3d, indices) for indices in indices_list]
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                print(future.result())
-        self.out = self.out.swapaxes(1, 2).swapaxes(0, 1).reshape(sz, nx, ny)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(self._get_one_img_3d, indices) for indices in indices_list]
+        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+            print(future.result())
 
     def save_result_2d(self):
         t = time.strftime("%Y%m%d%H%M")
