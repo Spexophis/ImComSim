@@ -93,7 +93,8 @@ class sim():
     def _get_pupil(self, zarr=None):
         dp = 1 / (self.nxh * 2 * self.dx)
         radius = (self.na / self.wl) / dp
-        msk = self._shift(self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)) / np.sqrt(np.pi * radius**2) / (self.nxh*2)
+        msk = self._shift(self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)) / np.sqrt(
+            np.pi * radius ** 2) / (self.nxh * 2)
         phi = np.zeros((self.nxh * 2, self.nyh * 2))
         if zarr is not None:
             for z in range(len(zarr)):
@@ -108,7 +109,7 @@ class sim():
         ny = self.nyh * 2
         alpha = 2 * np.pi / nx / self.dx
         gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
-        ph = np.fft.fftshift(np.fromfunction(gxy, (nx, ny), dtype=np.float32))-
+        ph = self._shift(np.fromfunction(gxy, (nx, ny), dtype=np.float32))
         wfp = np.sqrt(I) * ph * self.wf
         return np.abs(np.fft.fft2(wfp)) ** 2
 
@@ -119,7 +120,8 @@ class sim():
         alpha = 2 * np.pi / nx / self.dx
         gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
         ph[0, :, :] = np.fft.fftshift(np.fromfunction(gxy, (nx, ny)))
-        wfp = np.sqrt(I) * ph * np.exp(1j * self._focus_mode(z)) * self.wf
+        df = np.exp(1j * self._focus_mode(z)).astype(np.complex64)
+        wfp = np.sqrt(I) * ph * df * self.wf
         return np.abs(np.fft.fft2(wfp)) ** 2
 
     def _focus_mode(self, w=0):  # wavefront phase for focusing
@@ -131,10 +133,10 @@ class sim():
         if nap > n2:
             raise "Numerical aperture cannot be greater than n2!"
         dp = 1 / (self.nxh * 2 * self.dx)
-        radius = self.dx * (self.na / self.wl) / dp
-        msk = self._disc_array([0, 0], radius)
+        radius = (self.na / self.wl) / dp
         sinphim = (nap / n2)
-        rho = msk * self.rho / radius
+        msk = self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)
+        rho = msk * self._radial_Array(shape=(self.nxh * 2, self.nyh * 2), f=lambda x: x, origin=(0, 0)) / radius
         return np.fft.fftshift(2 * np.pi * msk * n2 * w * np.sqrt(1 - (sinphim * rho) ** 2) / wl)
 
     def _get_one_img_2d(self, indices):
