@@ -293,7 +293,12 @@ class sim():
         if m < 0:
             return ((-1) ** ((n - abs(m)) / 2)) * self._zernike(n, -m, radius, shape, origin)
         # Compute the polynomial.
-        
+        nx, ny = shape
+        ox = nx / 2
+        oy = ny / 2
+        x = np.linspace(-ox, ox - 1, nx) / radius
+        y = np.linspace(-oy, oy - 1, ny) / radius
+        xv, yv = np.meshgrid(x, y)
         rho, phi = self._image_grid_polar(xv, yv)
         kmax = int((n - abs(m)) / 2)
         summation = 0
