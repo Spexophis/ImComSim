@@ -96,13 +96,12 @@ class sim():
         msk = self._shift(self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)) / np.sqrt(
             np.pi * radius ** 2) / (self.nxh * 2)
         phi = np.zeros((self.nxh * 2, self.nyh * 2))
+        self.wf = msk * np.exp(1j * phi).astype(np.complex64)
         if zarr is not None:
             for z in range(len(zarr)):
-                n, m = self._zernike_nm(z + 1)
-                phi += zarr[z] * self._zernike(n, m, self.rho, self.phi)
-            self.wf = self.wf * np.exp(1j * phi).astype(np.complex64)
-        else:
-            self.wf = msk * np.exp(1j * phi).astype(np.complex64)
+                n, m = self._zernike_j_nm(z+1)
+                phi += zarr[z] * self._zernike(n, m, radius=radius, shape=(self.nxh * 2, self.nyh * 2))
+            self.wf *= np.exp(1j * phi).astype(np.complex64)
 
     def _add_psf_2d(self, x, y, I):
         nx = self.nxh * 2
@@ -311,7 +310,7 @@ class sim():
                           (factorial(k) * factorial(0.5 * (n + abs(m)) - k) *
                            factorial(0.5 * (n - abs(m)) - k)) *
                           rho ** (n - 2 * k))
-        return summation * np.cos(m * phi)
+        return summation * np.cos(m * phi) * self._disc_array(shape, radius)
 
 
 if __name__ == '__main__':
@@ -319,7 +318,7 @@ if __name__ == '__main__':
     # s._get_line_objects(4, False)
     # s._get_point_objects(512, True)
     # s._get_both_objects(8, 512)
-    s._get_pupil()
+    s._get_pupil(zarr=[0., 0., 0, 1.])
     s._get_point_objects(512, True)
     s.sim_2d()
     s.save_result_2d()
