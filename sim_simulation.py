@@ -179,7 +179,6 @@ class sim():
         self.phase = [n * (2 * np.pi / self.number_of_phases) for n in range(self.number_of_phases)]
         self.kx = 2 * np.pi * np.cos(self.angle) / self.sp
         self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
-        sz = self.number_of_angles * self.number_of_phases
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
@@ -199,7 +198,6 @@ class sim():
         self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
         phim = self.na / self.n2
         self.kz = (2 * np.pi / self.sp) * (1 - np.sqrt(1 - phim ** 2))
-        sz = self.number_of_angles * self.number_of_phases * nz
         self.out = np.zeros((self.number_of_angles, self.number_of_phases, nz, nx, ny))
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
         with concurrent.futures.ThreadPoolExecutor() as executor:
