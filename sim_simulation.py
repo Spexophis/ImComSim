@@ -158,10 +158,10 @@ class sim():
             zplane = self.dz * (zp - self.focal_plane)
             for m in range(self.number_of_fluorophores):
                 cs2xy = np.cos(
-                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[
+                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + 2 * self.phase[
                         indices[1]])
                 csxy = np.cos(
-                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + 0.5 * self.phase[indices[1]])
+                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]])
                 csz = np.cos(self.kz * (self.zps[m] - zplane))
                 Ip = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
                 self.out[indices[0], indices[1], zp, :, :] += self._add_psf_3d(self.xps[m], self.yps[m],
