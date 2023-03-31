@@ -320,7 +320,7 @@ class sim():
 if __name__ == '__main__':
     s = sim()
     # s._get_line_objects(4, False)
-    s._get_point_objects(128, True)
+    s._get_point_objects(256, True)
     # s._get_both_objects(8, 512)
     s._get_pupil()
     # s._get_pupil(zarr=[0., 0., 0, 1.])
