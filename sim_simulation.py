@@ -25,11 +25,11 @@ class sim():
         self.na = 1.4
         self.n2 = 1.512
         self.sp = 0.5  # um
-        self.number_of_angles = 3
-        self.number_of_phases = 5
+        self.number_of_angles = None
+        self.number_of_phases = None
         self.number_of_fluorophores = None
         self.focal_plane = self.nzh
-        self.I = 512
+        self.I = None
         self.image_stack = None
         self.out = None
         self.cam_offset = 20.0
@@ -146,7 +146,7 @@ class sim():
         ny = self.nyh * 2
         kx = 2 * np.pi * np.cos(angle) / self.sp
         ky = 2 * np.pi * np.sin(angle) / self.sp
-        img = self.cam_offset * np.ones((nx, ny))
+        img = self.cam_offset + np.zeros((nx, ny))
         for m in range(self.number_of_fluorophores):
             Ip = self.I * 0.5 * (1 + np.cos(kx * self.xps[m] + ky * self.yps[m] + phase))
             img += self._add_psf_2d(self.xps[m], self.yps[m], Ip)
@@ -178,11 +178,12 @@ class sim():
         self.out[indices[0], indices[1], :, :, :] = rd.poisson(imgstack)
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
-    def _run_all_angles_2d(self, cocurrent_method='threadpool'):
+    def sim_2d(self, nang=3, nph=3, I=1000, cocurrent_method='threadpool'):
         nx = self.nxh * 2
         ny = self.nxh * 2
-        self.number_of_angles = 3
-        self.number_of_phases = 3
+        self.number_of_angles = nang
+        self.number_of_phases = nph
+        self.I = I
         sz = self.number_of_angles * self.number_of_phases
         self.out = np.zeros((sz, nx, ny), dtype=np.float32)
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
@@ -197,12 +198,13 @@ class sim():
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
                 print(future.result())
 
-    def _run_all_angles_3d(self, cocurrent_method='threadpool'):
+    def sim_3d(self, nang=3, nph=5, I=1000, cocurrent_method='threadpool'):
         nx = self.nxh * 2
         ny = self.nxh * 2
         nz = self.nzh * 2
-        self.number_of_angles = 3
-        self.number_of_phases = 5
+        self.number_of_angles = nang
+        self.number_of_phases = nph
+        self.I = I
         sz = self.number_of_angles * self.number_of_phases * nz
         self.out = np.zeros((self.number_of_angles, self.number_of_phases, nz, nx, ny))
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
@@ -218,7 +220,7 @@ class sim():
                 print(future.result())
         self.image_stack = self.out.swapaxes(1, 2).swapaxes(0, 1).reshape(sz, nx, ny)
 
-    def _save_result_2d(self):
+    def save_result_2d(self):
         t = time.strftime("%Y%m%d%H%M")
         path = t + '_'
         tf.imwrite(path + 'si2d_simulation_image_stack.tif', self.out.astype(np.uint16),
@@ -229,7 +231,7 @@ class sim():
                              'wavelength': self.wl, 'numerical aperture': self.na,
                              'pattern spacing': self.sp})
 
-    def _save_result_3d(self):
+    def save_result_3d(self):
         t = time.strftime("%Y%m%d%H%M")
         path = t + '_'
         tf.imwrite(path + 'si3d_simulation_image_stack.tif', self.image_stack.astype(np.uint16),
@@ -319,5 +321,5 @@ if __name__ == '__main__':
     # s._get_both_objects(8, 512)
     s._get_pupil()
     s._get_point_objects(512, True)
-    s._run_all_angles_2d()
-    s._save_result_2d()
+    s.sim_2d()
+    s.save_result_2d()
