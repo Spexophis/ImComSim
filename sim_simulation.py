@@ -169,7 +169,7 @@ class sim():
         self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.out[indices[0], indices[1], :, :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
-    def sim_2d(self, nang=3, nph=3, I=1000, cocurrent_method='threadpool'):
+    def sim_2d(self, nang=3, nph=3, I=1000, cocurrent_method='processpool'):
         nx = self.nxh * 2
         ny = self.nxh * 2
         self.number_of_angles = nang
