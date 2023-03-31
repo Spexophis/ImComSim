@@ -287,12 +287,14 @@ class sim():
             m = -m
         return n, m
 
-    def _zernike(self, n, m, rho, phi):
+    def _zernike(self, n, m, radius=64, shape=(128, 128), origin=None):
         if (n < 0) or (n < abs(m)) or (n % 2 != abs(m) % 2):
             raise ValueError("n and m are not valid Zernike indices")
         if m < 0:
-            return ((-1) ** ((n - abs(m)) / 2)) * self._zernike(n, -m, rho, phi)
+            return ((-1) ** ((n - abs(m)) / 2)) * self._zernike(n, -m, radius, shape, origin)
         # Compute the polynomial.
+        
+        rho, phi = self._image_grid_polar(xv, yv)
         kmax = int((n - abs(m)) / 2)
         summation = 0
         for k in range(kmax + 1):
