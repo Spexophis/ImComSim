@@ -192,7 +192,7 @@ class sim():
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
                 print(future.result())
 
-    def sim_3d(self, nang=3, nph=5, I=1000, cocurrent_method='threadpool'):
+    def sim_3d(self, nang=3, nph=5, I=1000, cocurrent_method='processpool'):
         nx = self.nxh * 2
         ny = self.nxh * 2
         nz = self.nzh * 2
