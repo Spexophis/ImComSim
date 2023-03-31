@@ -1,3 +1,5 @@
+import numpy as np
+
 import Utility36 as U
 import Zernike36 as Z
 
@@ -19,6 +21,7 @@ fftshift = N.fft.fftshift
 class sim():
 
     def __init__(self, nx=128, nz=26):
+        self.out = None
         self.yps = None
         self.xps = None
         self.zps = None
@@ -68,8 +71,7 @@ class sim():
         ph = U.shift(ph)
         defocus = N.exp(1j * self.focusmode(z)).astype(N.complex64)
         wfp = N.sqrt(I) * ph * defocus * self.wf
-        self.imgf += abs(fft2(wfp)) ** 2
-        return True
+        return abs(fft2(wfp)) ** 2
 
     def focusmode(self, w=5):  # wavefront phase for focusing
         """ focus mode, d is depth in microns, nap is num. ap.
@@ -92,51 +94,61 @@ class sim():
         wf = 2 * N.pi * msk * n2 * w * N.sqrt(1 - (sinphim * rho) ** 2) / wl
         return wf
 
-    def getoneimg(self, angle, phase, Iph):
-        # self.imgf[:,:] = 0.0
-        # get points
-        # create psfs
+    def getoneimg(self, indices):
         phim = self.na / self.n2
+        angle = indices[2]
+        phase = indices[3]
         kx = 2 * pi * N.cos(angle) / self.sp
         ky = 2 * pi * N.sin(angle) / self.sp
         dkz = (2 * pi / self.sp) * (1 - N.sqrt(1 - phim ** 2))
         print(dkz)
+        imgf = np.zeros((self.nx, self.nx))
         for zp in range(self.nz):
             zplane = self.dz * (zp - self.fp)
-            self.imgf[:, :] = 20.0
+            imgf[:, :] = 20.0
             for m in range(self.Np):
                 # Ip = Iph*0.5*(1+N.cos(kx*self.xps[m]+ky*self.yps[m]+phase))
                 cs2xy = N.cos(2 * kx * self.xps[m] + 2 * ky * self.yps[m] + 2 * phase)
                 csxy = N.cos(kx * self.xps[m] + ky * self.yps[m] + phase)
                 csz = N.cos(dkz * (self.zps[m] - zplane))
-                Ip = Iph * (3 + 2 * cs2xy + 4 * csz * csxy)
-                self.addpsf(self.xps[m], self.yps[m], self.zps[m] - zplane, Ip)
-            self.img[zp] = self.imgf  # fft2(self.imgf).real
-        # noise
-        self.img = rd.poisson(self.img)
-        # done!
+                Ip = self.Iph * (3 + 2 * cs2xy + 4 * csz * csxy)
+                imgf += self.addpsf(self.xps[m], self.yps[m], self.zps[m] - zplane, Ip)
+            self.img[zp] = imgf
+        self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.img)
+        return 'done', 'angle', indices[2], 'phase', indices[3]
 
     def run(self, Iph=1000, nangles=3, nphases=5):
-        out = N.zeros((nangles, nphases, self.nz, self.nx, self.nx), dtype=N.float32)
-        for nph in range(nangles):
-            for m in range(nphases):
-                print('angle', nph, 'phase', m)
-                self.getoneimg(nph * (2 * pi / nangles), m * (2 * pi / nphases), Iph)
-                out[nph, m, :, :, :] = self.img
-        tf.imwrite('sim_si3d_2.tif', out.swapaxes(1, 2).swapaxes(0, 1).reshape(3 * nphases * self.nz, self.nx, self.nx),
+        self.Iph = Iph
+        self.out = N.zeros((nangles, nphases, self.nz, self.nx, self.nx), dtype=N.float32)
+        # for nph in range(nangles):
+        #     for m in range(nphases):
+        #         print('angle', nph, 'phase', m)
+        #         self.getoneimg(nph * (2 * pi / nangles), m * (2 * pi / nphases), Iph)
+        #         out[nph, m, :, :, :] = self.img
+        # tf.imwrite('sim_si3d_2.tif', out.swapaxes(1, 2).swapaxes(0, 1).reshape(3 * nphases * self.nz, self.nx, self.nx),
+        #           photometric='minisblack')
+        indices_list = [(n, m, n * (2 * pi / nangles), m * (2 * pi / nphases)) for n in range(nangles) for m in range(nphases)]
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(self.getoneimg, indices) for indices in indices_list]
+        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+            print(future.result())
+        t = time.strftime("%Y%m%d%H%M")
+        path = t + '_'
+        tf.imwrite(path + 'sim_si3d_2.tif', self.out.swapaxes(1, 2).swapaxes(0, 1).reshape(nangles * nphases * self.nz, self.nx, self.nx),
                   photometric='minisblack')
 
 
 if __name__ == '__main__':
-    d = N.load(r'C:/Users/ruizhe.lin/Documents/python_codes/sim3d/3DLines_500lines_5x5x5um_300f_per_um.npy')
-    d[1] = 0.8 + (d[1] - d[1].min()) / 1000
-    d[2] = 0.8 + (d[2] - d[2].min()) / 1000
-    d[0] = - 2.5 + (d[0] - d[0].min()) / 1000
+    # d = N.load(r'C:/Users/ruizhe.lin/Documents/python_codes/sim3d/3DLines_500lines_5x5x5um_300f_per_um.npy')
+    # d[1] = 0.8 + (d[1] - d[1].min()) / 1000
+    # d[2] = 0.8 + (d[2] - d[2].min()) / 1000
+    # d[0] = - 2.5 + (d[0] - d[0].min()) / 1000
     s = sim(88, 26)
     s.getaberr()
     s.getobj()
-    s.Np = 674990
-    s.xps = d[2]
-    s.yps = d[1]
-    s.zps = d[0]
-    s.runthreeangles(Iph=256, nphases=5)
+    # s.Np = 674990
+    # s.xps = d[2]
+    # s.yps = d[1]
+    # s.zps = d[0]
+    s.run(Iph=256)
+

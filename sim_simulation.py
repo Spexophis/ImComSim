@@ -24,13 +24,12 @@ class sim():
         self.wl = 0.505  # um
         self.na = 1.4
         self.n2 = 1.512
-        self.sp = 0.5  # um
+        self.sp = 0.2 # um
         self.number_of_angles = None
         self.number_of_phases = None
         self.number_of_fluorophores = None
         self.focal_plane = self.nzh
         self.I = None
-        self.image_stack = None
         self.out = None
         self.cam_offset = 20.0
 
@@ -38,7 +37,7 @@ class sim():
         self.number_of_fluorophores = number_of_fluorophores
         n = self.number_of_fluorophores
         self.xps = (self.dx * self.nxh * 2) * (0.8 * rd.rand(n) + 0.1)
-        self.yps = (self.dx * self.nyh * 2) * (0.8 * rd.rand(n) + 0.1)
+        self.yps = (self.dy * self.nyh * 2) * (0.8 * rd.rand(n) + 0.1)
         if singleplane:
             self.zps = np.zeros(n)
         else:
@@ -47,9 +46,9 @@ class sim():
     def _get_line_objects(self, number_of_lines, singleplane=True):
         number_of_fluorophores_per_line = np.random.randint(128, 512, number_of_lines)
         x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
+        y_start = (self.dy * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
+        y_end = (self.dy * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         xps = np.zeros(1)
         yps = np.zeros(1)
         if singleplane:
@@ -115,10 +114,9 @@ class sim():
     def _add_psf_3d(self, x, y, z, I):
         nx = self.nxh * 2
         ny = self.nyh * 2
-        ph = np.ones((1, nx, ny), dtype=np.complex64)
         alpha = 2 * np.pi / nx / self.dx
         gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
-        ph[0, :, :] = np.fft.fftshift(np.fromfunction(gxy, (nx, ny)))
+        ph = np.fft.fftshift(np.fromfunction(gxy, (nx, ny)))
         df = np.exp(1j * self._focus_mode(z)).astype(np.complex64)
         wfp = np.sqrt(I) * ph * df * self.wf
         return np.abs(np.fft.fft2(wfp)) ** 2
@@ -126,55 +124,42 @@ class sim():
     def _focus_mode(self, w=0):  # wavefront phase for focusing
         """ focus mode, d is depth in microns, nap is num. ap.
         focuses, with depth correction """
-        nap = self.na
+        na = self.na
         n2 = self.n2
         wl = self.wl
-        if nap > n2:
+        if na > n2:
             raise "Numerical aperture cannot be greater than n2!"
         dp = 1 / (self.nxh * 2 * self.dx)
         radius = (self.na / self.wl) / dp
-        sinphim = (nap / n2)
+        sinphim = (na / n2)
         msk = self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)
         rho = msk * self._radial_Array(shape=(self.nxh * 2, self.nyh * 2), f=lambda x: x, origin=(0, 0)) / radius
         return np.fft.fftshift(2 * np.pi * msk * n2 * w * np.sqrt(1 - (sinphim * rho) ** 2) / wl)
 
     def _get_one_img_2d(self, indices):
-        angle = indices[0] * (2 * np.pi / self.number_of_angles)
-        phase = indices[1] * (2 * np.pi / self.number_of_phases)
         nx = self.nxh * 2
         ny = self.nyh * 2
-        kx = 2 * np.pi * np.cos(angle) / self.sp
-        ky = 2 * np.pi * np.sin(angle) / self.sp
-        img = self.cam_offset + np.zeros((nx, ny))
+        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
         for m in range(self.number_of_fluorophores):
-            Ip = self.I * 0.5 * (1 + np.cos(kx * self.xps[m] + ky * self.yps[m] + phase))
-            img += self._add_psf_2d(self.xps[m], self.yps[m], Ip)
-        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(img)
+            Ip = self.I * 0.5 * (1 + np.cos(self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
+            self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m], self.yps[m], Ip)
+        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(self.out[indices[0] * self.number_of_phases + indices[1], :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
     def _get_one_img_3d(self, indices):
-        angle = indices[0] * (2 * np.pi / self.number_of_angles)
-        phase = indices[1] * (2 * np.pi / self.number_of_phases)
         nx = self.nxh * 2
         ny = self.nyh * 2
         nz = self.nzh * 2
-        phim = self.na / self.n2
-        kx = 2 * np.pi * np.cos(angle) / self.sp
-        ky = 2 * np.pi * np.sin(angle) / self.sp
-        dkz = (np.pi / self.sp) * (1 - np.sqrt(1 - phim ** 2))
-        imgstack = np.zeros((nz, nx, ny))
         for zp in range(nz):
             zplane = self.dz * (zp - self.focal_plane)
-            img = self.cam_offset * np.ones((1, nx, ny))
+            self.out[indices[0], indices[1], :, :, :] = self.cam_offset + np.zeros((nz, nx, ny))
             for m in range(self.number_of_fluorophores):
-                # Ip = Iph*0.5*(1+N.cos(kx*self.xps[m]+ky*self.yps[m]+phase))
-                cs2xy = np.cos(2 * kx * self.xps[m] + 2 * ky * self.yps[m] + 2 * phase)
-                csxy = np.cos(kx * self.xps[m] + ky * self.yps[m] + phase)
-                csz = np.cos(dkz * (self.zps[m] - zplane))
+                cs2xy = np.cos(2 * self.kx[indices[0]] * self.xps[m] + 2 * self.ky[indices[0]] * self.yps[m] + 2 * self.phase[indices[1]])
+                csxy = np.cos(self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]])
+                csz = np.cos(self.kz * (self.zps[m] - zplane))
                 Ip = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
-                img += self._add_psf_3d(self.xps[m], self.yps[m], self.zps[m] - zplane, Ip)
-            imgstack[zp, :, :] = img[0]  # fft2(self.imgf).real
-        self.out[indices[0], indices[1], :, :, :] = rd.poisson(imgstack)
+                self.out[indices[0], indices[1], zp, :, :] += self._add_psf_3d(self.xps[m], self.yps[m], self.zps[m] - zplane, Ip)
+        self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.out[indices[0], indices[1], :, :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
     def sim_2d(self, nang=3, nph=3, I=1000, cocurrent_method='threadpool'):
@@ -183,8 +168,11 @@ class sim():
         self.number_of_angles = nang
         self.number_of_phases = nph
         self.I = I
+        self.angle = [n * (2 * np.pi / self.number_of_angles) for n in range(self.number_of_angles)]
+        self.phase = [n * (2 * np.pi / self.number_of_phases) for n in range(self.number_of_phases)]
+        self.kx = 2 * np.pi * np.cos(self.angle) / self.sp
+        self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
         sz = self.number_of_angles * self.number_of_phases
-        self.out = np.zeros((sz, nx, ny), dtype=np.float32)
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
         if cocurrent_method == 'threadpool':
             with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -204,6 +192,12 @@ class sim():
         self.number_of_angles = nang
         self.number_of_phases = nph
         self.I = I
+        self.angle = [n * (2 * np.pi / self.number_of_angles) for n in range(self.number_of_angles)]
+        self.phase = [n * (2 * np.pi / self.number_of_phases) for n in range(self.number_of_phases)]
+        self.kx = 2 * np.pi * np.cos(self.angle) / self.sp
+        self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
+        phim = self.na / self.n2
+        self.kz = (np.pi / self.sp) * (1 - np.sqrt(1 - phim ** 2))
         sz = self.number_of_angles * self.number_of_phases * nz
         self.out = np.zeros((self.number_of_angles, self.number_of_phases, nz, nx, ny))
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
@@ -217,13 +211,12 @@ class sim():
                 futures = [executor.submit(self._get_one_img_3d, indices) for indices in indices_list]
             for i, future in enumerate(concurrent.futures.as_completed(futures)):
                 print(future.result())
-        self.image_stack = self.out.swapaxes(1, 2).swapaxes(0, 1).reshape(sz, nx, ny)
+        self.out = self.out.swapaxes(1, 2).swapaxes(0, 1).reshape(sz, nx, ny)
 
     def save_result_2d(self):
         t = time.strftime("%Y%m%d%H%M")
         path = t + '_'
-        tf.imwrite(path + 'si2d_simulation_image_stack.tif', self.out.astype(np.uint16),
-                   photometric='minisblack',
+        tf.imwrite(path + 'si2d_simulation_image_stack.tif', self.out, photometric='minisblack',
                    metadata={'number of phases': self.number_of_phases,
                              'number of angles': self.number_of_angles,
                              'pixel size (xy)': self.dx,
@@ -233,8 +226,7 @@ class sim():
     def save_result_3d(self):
         t = time.strftime("%Y%m%d%H%M")
         path = t + '_'
-        tf.imwrite(path + 'si3d_simulation_image_stack.tif', self.image_stack.astype(np.uint16),
-                   photometric='minisblack',
+        tf.imwrite(path + 'si3d_simulation_image_stack.tif', self.out, photometric='minisblack',
                    metadata={'number of phases': self.number_of_phases,
                              'number of angles': self.number_of_angles,
                              'pixel size (xy)': self.dx, 'pixel size (z)': self.dz,
@@ -318,7 +310,8 @@ if __name__ == '__main__':
     # s._get_line_objects(4, False)
     # s._get_point_objects(512, True)
     # s._get_both_objects(8, 512)
-    s._get_pupil(zarr=[0., 0., 0, 1.])
-    s._get_point_objects(512, True)
-    s.sim_2d()
-    s.save_result_2d()
+    # s._get_pupil(zarr=[0., 0., 0, 1.])
+    s._get_pupil()
+    s._get_point_objects(64, True)
+    s.sim_3d()
+    s.save_result_3d()
