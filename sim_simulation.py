@@ -24,7 +24,7 @@ class sim():
         self.wl = 0.505  # um
         self.na = 1.4
         self.n2 = 1.512
-        self.sp = 0.2 # um
+        self.sp = 0.2  # um
         self.number_of_angles = None
         self.number_of_phases = None
         self.number_of_fluorophores = None
@@ -98,7 +98,7 @@ class sim():
         self.wf = msk * np.exp(1j * phi).astype(np.complex64)
         if zarr is not None:
             for z in range(len(zarr)):
-                n, m = self._zernike_j_nm(z+1)
+                n, m = self._zernike_j_nm(z + 1)
                 phi += zarr[z] * self._zernike(n, m, radius=radius, shape=(self.nxh * 2, self.nyh * 2))
             self.wf *= np.exp(1j * phi).astype(np.complex64)
 
@@ -116,7 +116,7 @@ class sim():
         ny = self.nyh * 2
         alpha = 2 * np.pi / nx / self.dx
         gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
-        ph = np.fft.fftshift(np.fromfunction(gxy, (nx, ny)))
+        ph = self._shift(np.fromfunction(gxy, (nx, ny), dtype=np.float32))
         df = np.exp(1j * self._focus_mode(z)).astype(np.complex64)
         wfp = np.sqrt(I) * ph * df * self.wf
         return np.abs(np.fft.fft2(wfp)) ** 2
@@ -131,34 +131,41 @@ class sim():
             raise "Numerical aperture cannot be greater than n2!"
         dp = 1 / (self.nxh * 2 * self.dx)
         radius = (self.na / self.wl) / dp
-        sinphim = (na / n2)
-        msk = self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)
+        sinphim = na / n2
+        msk = self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius, origin=(0, 0))
         rho = msk * self._radial_Array(shape=(self.nxh * 2, self.nyh * 2), f=lambda x: x, origin=(0, 0)) / radius
-        return np.fft.fftshift(2 * np.pi * msk * n2 * w * np.sqrt(1 - (sinphim * rho) ** 2) / wl)
+        return 2 * np.pi * msk * n2 * w * np.sqrt(1 - (sinphim * rho) ** 2) / wl
 
     def _get_one_img_2d(self, indices):
         nx = self.nxh * 2
         ny = self.nyh * 2
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
         for m in range(self.number_of_fluorophores):
-            Ip = self.I * 0.5 * (1 + np.cos(self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
-            self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m], self.yps[m], Ip)
-        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(self.out[indices[0] * self.number_of_phases + indices[1], :, :])
+            Ip = self.I * 0.5 * (1 + np.cos(
+                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
+            self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
+                                                                                                self.yps[m], Ip)
+        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(
+            self.out[indices[0] * self.number_of_phases + indices[1], :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
     def _get_one_img_3d(self, indices):
         nx = self.nxh * 2
         ny = self.nyh * 2
         nz = self.nzh * 2
+        self.out[indices[0], indices[1], :, :, :] = self.cam_offset + np.zeros((nz, nx, ny))
         for zp in range(nz):
             zplane = self.dz * (zp - self.focal_plane)
-            self.out[indices[0], indices[1], :, :, :] = self.cam_offset + np.zeros((nz, nx, ny))
             for m in range(self.number_of_fluorophores):
-                cs2xy = np.cos(2 * self.kx[indices[0]] * self.xps[m] + 2 * self.ky[indices[0]] * self.yps[m] + 2 * self.phase[indices[1]])
-                csxy = np.cos(self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]])
+                cs2xy = np.cos(
+                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[
+                        indices[1]])
+                csxy = np.cos(
+                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + 0.5 * self.phase[indices[1]])
                 csz = np.cos(self.kz * (self.zps[m] - zplane))
                 Ip = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
-                self.out[indices[0], indices[1], zp, :, :] += self._add_psf_3d(self.xps[m], self.yps[m], self.zps[m] - zplane, Ip)
+                self.out[indices[0], indices[1], zp, :, :] += self._add_psf_3d(self.xps[m], self.yps[m],
+                                                                               self.zps[m] - zplane, Ip)
         self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.out[indices[0], indices[1], :, :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
@@ -197,7 +204,7 @@ class sim():
         self.kx = 2 * np.pi * np.cos(self.angle) / self.sp
         self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
         phim = self.na / self.n2
-        self.kz = (np.pi / self.sp) * (1 - np.sqrt(1 - phim ** 2))
+        self.kz = (2 * np.pi / self.sp) * (1 - np.sqrt(1 - phim ** 2))
         sz = self.number_of_angles * self.number_of_phases * nz
         self.out = np.zeros((self.number_of_angles, self.number_of_phases, nz, nx, ny))
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
@@ -236,7 +243,7 @@ class sim():
     def _image_grid_polar(self, x, y):
         return np.sqrt(x ** 2 + y ** 2), np.arctan2(y, x)
 
-    def _disc_array(self, shape=(128, 128), radius=64):
+    def _disc_array(self, shape=(128, 128), radius=64, origin=None):
         nx, ny = shape
         ox = nx / 2
         oy = ny / 2
@@ -244,7 +251,12 @@ class sim():
         y = np.linspace(-oy, oy - 1, ny)
         X, Y = np.meshgrid(x, y)
         rho = np.sqrt(X ** 2 + Y ** 2)
-        return rho <= radius
+        disc = (rho < radius)
+        if not origin is None:
+            s0 = origin[0] - int(nx / 2)
+            s1 = origin[1] - int(ny / 2)
+            disc = np.roll(np.roll(disc, int(s0), 0), int(s1), 1)
+        return disc
 
     def _radial_Array(self, shape=(128, 128), f=None, origin=None):
         nx = shape[0]
@@ -308,10 +320,11 @@ class sim():
 if __name__ == '__main__':
     s = sim()
     # s._get_line_objects(4, False)
-    # s._get_point_objects(512, True)
+    s._get_point_objects(128, True)
     # s._get_both_objects(8, 512)
-    # s._get_pupil(zarr=[0., 0., 0, 1.])
     s._get_pupil()
-    s._get_point_objects(64, True)
+    # s._get_pupil(zarr=[0., 0., 0, 1.])
+    # s.sim_2d()
+    # s.save_result_2d()
     s.sim_3d()
     s.save_result_3d()
