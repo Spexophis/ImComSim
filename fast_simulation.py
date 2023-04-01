@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 class SIM:
     def __init__(self):
-        self.max_workers = 4
+        self.max_workers = 6
         self.nxh = 64
         self.nyh = 64
         self.nzh = 16
