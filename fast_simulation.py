@@ -11,6 +11,7 @@ import time
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
 
+
 class SIM:
     def __init__(self):
         self.max_workers = 6
@@ -31,6 +32,8 @@ class SIM:
         self.I = None
         self.out = None
         self.cam_offset = 100.0
+        self.texpo = 0.1  # unit in second
+        self.taoff = 0.02  # unit in second
 
     async def run_in_process_pool(self, func, *args):
         loop = asyncio.get_event_loop()
@@ -149,7 +152,8 @@ class SIM:
         indices = self.indices_list[n]
         image = self.cam_offset + np.zeros((self.nxh * 2, self.nyh * 2))
         for m in range(self.number_of_fluorophores):
-            Ip = self.I * 0.5 * (1 + np.cos(self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
+            Ip = self.I * 0.5 * (1 + np.cos(
+                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
             image += self._add_psf_2d(self.xps[m], self.yps[m], Ip)
         return rd.poisson(image)
 
@@ -159,12 +163,30 @@ class SIM:
         for zp in range(self.nzh * 2):
             zplane = self.dz * (zp - self.focal_plane)
             for m in range(self.number_of_fluorophores):
-                cs2xy = np.cos(self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + 2 * self.phase[indices[1]])
-                csxy = np.cos(0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]])
+                cs2xy = np.cos(
+                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + 2 * self.phase[indices[1]])
+                csxy = np.cos(
+                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + self.phase[
+                        indices[1]])
                 csz = np.cos(self.kz * (self.zps[m] - zplane))
                 Ip = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
                 imagestack[zp] += self._add_psf_3d(self.xps[m], self.yps[m], self.zps[m] - zplane, Ip)
         return rd.poisson(imagestack)
+
+    def generate_image_2dnl(self, n):
+        indices = self.indices_list[n]
+        image = self.cam_offset + np.zeros((self.nxh * 2, self.nyh * 2))
+        for m in range(self.number_of_fluorophores):
+            Ip = self._nlsim_pattern_2d(self.kx[indices[0]], self.ky[indices[0]], self.phase[indices[2]], self.xps[m],
+                                        self.yps[m], self.I)
+            image += self._add_psf_2d(self.xps[m], self.yps[m], Ip)
+        return rd.poisson(image)
+
+    def _nlsim_pattern_2d(self, kx, ky, phase, x, y, I):
+        readout = 0.5 * (1 - np.cos(2 * np.pi * kx * x + 2 * np.pi * ky * y + phase + np.pi))
+        off_rate = np.exp(
+            -I * 0.5 * (1 - np.cos(2 * np.pi * kx * x + 2 * np.pi * ky * y + phase)) * self.texpo / (I * self.taoff))
+        return readout * off_rate
 
     def sim_2d(self, nang=3, nph=3, I=1024):
         self.number_of_angles = nang
