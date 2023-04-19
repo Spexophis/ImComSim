@@ -1,9 +1,9 @@
 import re
 
+import matplotlib.pyplot as plt
 import numpy as np
 import tifffile as tf
 from skimage.filters import window
-import matplotlib.pyplot as plt
 
 fft2 = np.fft.fft2
 ifft2 = np.fft.ifft2
@@ -124,11 +124,11 @@ class NLSIM2D():
         # shift otf and imgf to positive
         yshf = np.abs(fft2(ysh[0]))
         sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if (sx < Nw / 2):
+        if sx < Nw / 2:
             sx = sx
         else:
             sx = sx - Nw
-        if (sy < Nw / 2):
+        if sy < Nw / 2:
             sy = sy
         else:
             sy = sy - Nw
@@ -140,11 +140,11 @@ class NLSIM2D():
         # shift otf and imgf to negative
         yshf = np.abs(fft2(ysh[1]))
         sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if (sx < Nw / 2):
+        if sx < Nw / 2:
             sx = sx
         else:
             sx = sx - Nw
-        if (sy < Nw / 2):
+        if sy < Nw / 2:
             sy = sy
         else:
             sy = sy - Nw
@@ -167,11 +167,11 @@ class NLSIM2D():
         ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv))
         yshf = np.abs(fft2(ysh))
         sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if (sx < Nw / 2):
+        if sx < Nw / 2:
             sx = sx
         else:
             sx = sx - Nw
-        if (sy < Nw / 2):
+        if sy < Nw / 2:
             sy = sy
         else:
             sy = sy - Nw
@@ -218,7 +218,7 @@ class NLSIM2D():
             plt.figure()
             plt.subplot(211)
             plt.imshow(magarr, vmin=magarr.min(), vmax=magarr.max(),
-                   extent=[sp_iter.min(), sp_iter.max(), ang_iter.max(), ang_iter.min()], interpolation=None)
+                       extent=[sp_iter.min(), sp_iter.max(), ang_iter.max(), ang_iter.min()], interpolation=None)
             plt.subplot(212)
             plt.imshow(pharr, interpolation=None)
         # get maximum
@@ -310,7 +310,7 @@ class NLSIM2D():
             plt.figure()
             plt.subplot(211)
             plt.imshow(magarr, vmin=magarr.min(), vmax=magarr.max(),
-                   extent=[sp_iter.min(), sp_iter.max(), ang_iter.max(), ang_iter.min()], interpolation=None)
+                       extent=[sp_iter.min(), sp_iter.max(), ang_iter.max(), ang_iter.min()], interpolation=None)
             plt.subplot(212)
             plt.imshow(pharr, interpolation=None)
         # get maximum
@@ -409,7 +409,7 @@ class NLSIM2D():
     def save_reconstruction(self, fn=''):
         tf.imwrite(fn + 'nlsim2d_final_image.tif', self.finalimage.real.astype(np.float32), photometric='minisblack')
         tf.imwrite(fn + 'nlsim2d_effective_OTF.tif', np.abs(fftshift(self.S)).astype(np.float32),
-                  photometric='minisblack')
+                   photometric='minisblack')
 
     def interp(self, arr, ratio):
         nx, ny = arr.shape
@@ -436,7 +436,6 @@ class NLSIM2D():
     def apod(self, eta):
         return fftshift(
             window(('kaiser', eta), (self.ny, self.nx)))  # window(('general_hamming', alpha=0.72), (self.nx, self.nx))
-
 
 # if __name__ == '__main__':
 
