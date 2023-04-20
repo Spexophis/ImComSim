@@ -62,7 +62,7 @@ class NLSIM2D():
         psf = np.abs((fft2(fftshift(bpp)))) ** 2
         return psf / psf.sum()
 
-    def _disc_array(self, shape=(128, 128), radius=64, origin=None):
+    def _disc_array(self, shape=(128, 128), radius=64):
         ny, nx = shape
         ox = nx / 2
         oy = ny / 2
