@@ -228,13 +228,13 @@ class sim:
                              'pattern spacing': self.sp})
 
     @staticmethod
-    def on_probability(I_on):
+    def _on_probability(I_on):
         p_on = np.exp(-I_on * 5)
         return 1 if rd.random() < p_on else 0
 
     @staticmethod
-    def off_probability(I_off):
-        p_off = np.exp(-I_off * 5)
+    def _off_probability(I_off):
+        p_off = np.exp(-I_off * 12)
         return 0 if rd.random() > p_off else 1
 
     def _get_one_img_nl_2d(self, indices):
@@ -244,7 +244,7 @@ class sim:
         for m in range(self.number_of_fluorophores):
             I_off = 1 + np.cos(
                 self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[indices[1]])
-            sw = self.off_probability(I_off)
+            sw = self._off_probability(I_off)
             I_read = sw * self.I * 0.5 * (1 + np.cos(
                 self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
             self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
@@ -266,7 +266,7 @@ class sim:
         self.out = np.zeros((self.number_of_angles * self.number_of_phases, nx, ny))
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
+            futures = [executor.submit(self._get_one_img_nl_2d, indices) for indices in indices_list]
         for i, future in enumerate(concurrent.futures.as_completed(futures)):
             print(future.result())
 
@@ -280,10 +280,12 @@ class sim:
                              'wavelength': self.wl, 'numerical aperture': self.na,
                              'pattern spacing': self.sp})
 
-    def _image_grid_polar(self, x, y):
+    @staticmethod
+    def _image_grid_polar(x, y):
         return np.sqrt(x ** 2 + y ** 2), np.arctan2(y, x)
 
-    def _disc_array(self, shape=(128, 128), radius=64, origin=None):
+    @staticmethod
+    def _disc_array(shape=(128, 128), radius=64, origin=None):
         nx, ny = shape
         ox = nx / 2
         oy = ny / 2
@@ -298,7 +300,8 @@ class sim:
             disc = np.roll(np.roll(disc, int(s0), 0), int(s1), 1)
         return disc
 
-    def _radial_Array(self, shape=(128, 128), f=None, origin=None):
+    @staticmethod
+    def _radial_Array(shape=(128, 128), f=None, origin=None):
         nx = shape[0]
         ny = shape[1]
         ox = nx / 2
@@ -308,13 +311,14 @@ class sim:
         X, Y = np.meshgrid(x, y)
         rho = np.sqrt(X ** 2 + Y ** 2)
         rarr = f(rho)
-        if not origin == None:
+        if not origin is None:
             s0 = origin[0] - nx / 2
             s1 = origin[1] - ny / 2
             rarr = np.roll(np.roll(rarr, int(s0), 0), int(s1), 1)
         return rarr
 
-    def _shift(self, arr, shifts=None):
+    @staticmethod
+    def _shift(arr, shifts=None):
         if shifts is None:
             shifts = np.array(arr.shape) / 2
         if len(arr.shape) == len(shifts):
@@ -322,7 +326,8 @@ class sim:
                 arr = np.roll(arr, int(p), m)
         return arr
 
-    def _zernike_j_nm(self, j):
+    @staticmethod
+    def _zernike_j_nm(j):
         if j < 1:
             raise ValueError("j must be a positive integer")
         n = 0
