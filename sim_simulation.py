@@ -11,7 +11,7 @@ import time
 import concurrent.futures
 
 
-class sim():
+class sim:
 
     def __init__(self):
 
@@ -24,16 +24,16 @@ class sim():
         self.wl = 0.505  # um
         self.na = 1.4
         self.n2 = 1.512
-        self.sp = 0.2  # um
+        self.sp = 0.24  # um
         self.number_of_angles = None
         self.number_of_phases = None
         self.number_of_fluorophores = None
         self.focal_plane = self.nzh
         self.I = None
         self.out = None
-        self.cam_offset = 20.0
+        self.cam_offset = 80.0
 
-    def _get_point_objects(self, number_of_fluorophores, singleplane=True):
+    def get_point_objects(self, number_of_fluorophores, singleplane=True):
         self.number_of_fluorophores = number_of_fluorophores
         n = self.number_of_fluorophores
         self.xps = (self.dx * self.nxh * 2) * (0.8 * rd.rand(n) + 0.1)
@@ -43,7 +43,7 @@ class sim():
         else:
             self.zps = (self.dz * self.nzh * 2) * (0.8 * rd.rand(n) - 0.4)
 
-    def _get_line_objects(self, number_of_lines, singleplane=True):
+    def get_line_objects(self, number_of_lines, singleplane=True):
         number_of_fluorophores_per_line = np.random.randint(128, 512, number_of_lines)
         x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         y_start = (self.dy * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
@@ -68,7 +68,7 @@ class sim():
         self.zps = np.delete(zps, 0)
         self.number_of_fluorophores = number_of_fluorophores_per_line.sum()
 
-    def _get_both_objects(self, number_of_lines, number_of_fluorophores):
+    def get_both_objects(self, number_of_lines, number_of_fluorophores):
         n = number_of_fluorophores
         xps = (self.dx * self.nxh * 2) * (0.8 * rd.rand(n) + 0.1)
         yps = (self.dx * self.nyh * 2) * (0.8 * rd.rand(n) + 0.1)
@@ -89,7 +89,7 @@ class sim():
         self.zps = zps
         self.number_of_fluorophores = number_of_fluorophores_per_line.sum() + number_of_fluorophores
 
-    def _get_pupil(self, zarr=None):
+    def get_pupil(self, zarr=None):
         dp = 1 / (self.nxh * 2 * self.dx)
         radius = (self.na / self.wl) / dp
         msk = self._shift(self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)) / np.sqrt(
@@ -161,7 +161,8 @@ class sim():
                     self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + 2 * self.phase[
                         indices[1]])
                 csxy = np.cos(
-                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]])
+                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + self.phase[
+                        indices[1]])
                 csz = np.cos(self.kz * (self.zps[m] - zplane))
                 Ip = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
                 self.out[indices[0], indices[1], zp, :, :] += self._add_psf_3d(self.xps[m], self.yps[m],
@@ -223,6 +224,59 @@ class sim():
                    metadata={'number of phases': self.number_of_phases,
                              'number of angles': self.number_of_angles,
                              'pixel size (xy)': self.dx, 'pixel size (z)': self.dz,
+                             'wavelength': self.wl, 'numerical aperture': self.na,
+                             'pattern spacing': self.sp})
+
+    @staticmethod
+    def on_probability(I_on):
+        p_on = np.exp(-I_on * 5)
+        return 1 if rd.random() < p_on else 0
+
+    @staticmethod
+    def off_probability(I_off):
+        p_off = np.exp(-I_off * 5)
+        return 0 if rd.random() < p_off else 1
+
+    def _get_one_img_nl_2d(self, indices):
+        nx = self.nxh * 2
+        ny = self.nyh * 2
+        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
+        for m in range(self.number_of_fluorophores):
+            I_off = 0.5 * (1 + np.cos(
+                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[indices[1]]))
+            sw = self.off_probability(I_off)
+            I_read = sw * self.I * 0.5 * (1 + np.cos(
+                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
+            self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
+                                                                                                self.yps[m], I_read)
+        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(
+            self.out[indices[0] * self.number_of_phases + indices[1], :, :])
+        return 'done', 'angle', indices[0], 'phase', indices[1]
+
+    def nlsim_2d(self, nang=5, nph=7, I=1600):
+        nx = self.nxh * 2
+        ny = self.nxh * 2
+        self.number_of_angles = nang
+        self.number_of_phases = nph
+        self.I = I
+        self.angle = [n * (2 * np.pi / self.number_of_angles) for n in range(self.number_of_angles)]
+        self.phase = [n * (2 * np.pi / self.number_of_phases) for n in range(self.number_of_phases)]
+        self.kx = 2 * np.pi * np.cos(self.angle) / self.sp
+        self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
+        self.out = np.zeros((self.number_of_angles * self.number_of_phases, nx, ny))
+        indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
+        for i, future in enumerate(concurrent.futures.as_completed(futures)):
+            print(future.result())
+
+    def save_result_nl2d(self):
+        t = time.strftime("%Y%m%d%H%M")
+        path = t + '_'
+        tf.imwrite(path + 'nlsi2d_simulation_image_stack.tif', self.out, photometric='minisblack',
+                   metadata={'number of phases': self.number_of_phases,
+                             'number of angles': self.number_of_angles,
+                             'pixel size (xy)': self.dx,
                              'wavelength': self.wl, 'numerical aperture': self.na,
                              'pattern spacing': self.sp})
 
@@ -306,11 +360,13 @@ class sim():
 if __name__ == '__main__':
     s = sim()
     # s._get_line_objects(4, False)
-    s._get_point_objects(256, True)
-    # s._get_both_objects(8, 512)
-    s._get_pupil()
+    # s._get_point_objects(256, True)
+    s.get_both_objects(8, 1024)
+    s.get_pupil()
     # s._get_pupil(zarr=[0., 0., 0, 1.])
     # s.sim_2d()
     # s.save_result_2d()
-    s.sim_3d()
-    s.save_result_3d()
+    # s.sim_3d()
+    # s.save_result_3d()
+    s.nlsim_2d()
+    s.save_result_nl2d()
