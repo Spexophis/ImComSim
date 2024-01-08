@@ -235,15 +235,15 @@ class sim:
     @staticmethod
     def off_probability(I_off):
         p_off = np.exp(-I_off * 5)
-        return 0 if rd.random() < p_off else 1
+        return 0 if rd.random() > p_off else 1
 
     def _get_one_img_nl_2d(self, indices):
         nx = self.nxh * 2
         ny = self.nyh * 2
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
         for m in range(self.number_of_fluorophores):
-            I_off = 0.5 * (1 + np.cos(
-                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[indices[1]]))
+            I_off = 1 + np.cos(
+                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[indices[1]])
             sw = self.off_probability(I_off)
             I_read = sw * self.I * 0.5 * (1 + np.cos(
                 self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
