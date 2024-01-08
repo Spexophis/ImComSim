@@ -253,7 +253,7 @@ class sim:
             self.out[indices[0] * self.number_of_phases + indices[1], :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
-    def nlsim_2d(self, nang=5, nph=7, I=1600):
+    def nlsim_2d(self, nang=7, nph=7, I=1600):
         nx = self.nxh * 2
         ny = self.nxh * 2
         self.number_of_angles = nang
