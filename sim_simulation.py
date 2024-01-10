@@ -64,7 +64,9 @@ class SIM:
             fx = np.poly1d(np.random.randint(-4, 4, size=(degrees[0] + 1)))
             fy = np.poly1d(np.random.randint(-4, 4, size=(degrees[1] + 1)))
             fz = np.poly1d(np.random.randint(-4, 4, size=(degrees[2] + 1)))
-            t = np.linspace(np.random.randint(-16, -2), np.random.randint(2, 16), number_of_fluorophores_per_curve[i])
+            t = np.linspace(np.random.randint(0, number_of_curves),
+                            np.random.randint(number_of_curves, number_of_curves ** 2),
+                            number_of_fluorophores_per_curve[i])
             x = fx(t)
             y = fy(t)
             z = fz(t)
