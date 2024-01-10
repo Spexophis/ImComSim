@@ -1,8 +1,3 @@
-"""
-This is the three-dimensional structured illumination microscopy simulation.
-First created on Fri May 24 10:15:59 2013 @author: Kner
-"""
-
 import numpy as np
 import numpy.random as rd
 from scipy.special import factorial
@@ -11,7 +6,7 @@ import time
 import concurrent.futures
 
 
-class sim:
+class SIM:
 
     def __init__(self):
 
@@ -25,54 +20,24 @@ class sim:
         self.na = 1.4
         self.n2 = 1.512
         self.sp = 0.24  # um
-        self.number_of_angles = None
-        self.number_of_phases = None
-        self.number_of_fluorophores = None
+        self.number_of_angles = 0
+        self.number_of_phases = 0
+        self.number_of_fluorophores = 0
+        self.xps = np.array([])
+        self.yps = np.array([])
+        self.zps = np.array([])
         self.focal_plane = self.nzh
         self.I = None
         self.out = None
         self.cam_offset = 80.0
 
-    def get_point_objects(self, number_of_fluorophores, singleplane=True):
-        self.number_of_fluorophores = number_of_fluorophores
-        n = self.number_of_fluorophores
-        self.xps = (self.dx * self.nxh * 2) * (0.8 * rd.rand(n) + 0.1)
-        self.yps = (self.dy * self.nyh * 2) * (0.8 * rd.rand(n) + 0.1)
-        if singleplane:
-            self.zps = np.zeros(n)
-        else:
-            self.zps = (self.dz * self.nzh * 2) * (0.8 * rd.rand(n) - 0.4)
+    def get_point_objects(self, number_of_dots):
+        coords_x = (self.dx * self.nxh * 2) * (0.8 * rd.rand(number_of_dots) + 0.1)
+        coords_y = (self.dy * self.nyh * 2) * (0.8 * rd.rand(number_of_dots) + 0.1)
+        coords_z = (self.dz * self.nzh * 2) * (0.8 * rd.rand(number_of_dots) - 0.4)
+        return number_of_dots, coords_x, coords_y, coords_z
 
-    def get_line_objects(self, number_of_lines, singleplane=True):
-        number_of_fluorophores_per_line = np.random.randint(128, 512, number_of_lines)
-        x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        y_start = (self.dy * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        y_end = (self.dy * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        xps = np.zeros(1)
-        yps = np.zeros(1)
-        if singleplane:
-            z_start = np.zeros(number_of_lines)
-            z_end = np.zeros(number_of_lines)
-            zps = np.zeros(1)
-        else:
-            z_start = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_lines) - 0.4)
-            z_end = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_lines))
-            zps = np.zeros(1)
-        for i in range(number_of_lines):
-            xps = np.concatenate((xps, np.linspace(x_start[i], x_end[i], number_of_fluorophores_per_line[i])), axis=0)
-            yps = np.concatenate((yps, np.linspace(y_start[i], y_end[i], number_of_fluorophores_per_line[i])), axis=0)
-            zps = np.concatenate((zps, np.linspace(z_start[i], z_end[i], number_of_fluorophores_per_line[i])), axis=0)
-        self.xps = np.delete(xps, 0)
-        self.yps = np.delete(yps, 0)
-        self.zps = np.delete(zps, 0)
-        self.number_of_fluorophores = number_of_fluorophores_per_line.sum()
-
-    def get_both_objects(self, number_of_lines, number_of_fluorophores):
-        n = number_of_fluorophores
-        xps = (self.dx * self.nxh * 2) * (0.8 * rd.rand(n) + 0.1)
-        yps = (self.dx * self.nyh * 2) * (0.8 * rd.rand(n) + 0.1)
-        zps = (self.dz * self.nzh * 2) * (0.8 * rd.rand(n) - 0.4)
+    def get_line_objects(self, number_of_lines):
         number_of_fluorophores_per_line = np.random.randint(128, 512, number_of_lines)
         x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
@@ -80,14 +45,56 @@ class sim:
         y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         z_start = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_lines) - 0.4)
         z_end = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_lines))
+        coords_x = np.array([])
+        coords_y = np.array([])
+        coords_z = np.array([])
         for i in range(number_of_lines):
-            xps = np.concatenate((xps, np.linspace(x_start[i], x_end[i], number_of_fluorophores_per_line[i])), axis=0)
-            yps = np.concatenate((yps, np.linspace(y_start[i], y_end[i], number_of_fluorophores_per_line[i])), axis=0)
-            zps = np.concatenate((zps, np.linspace(z_start[i], z_end[i], number_of_fluorophores_per_line[i])), axis=0)
-        self.xps = xps
-        self.yps = yps
-        self.zps = zps
-        self.number_of_fluorophores = number_of_fluorophores_per_line.sum() + number_of_fluorophores
+            coords_x = np.concatenate((coords_x, np.linspace(x_start[i], x_end[i], number_of_fluorophores_per_line[i])))
+            coords_y = np.concatenate((coords_y, np.linspace(y_start[i], y_end[i], number_of_fluorophores_per_line[i])))
+            coords_z = np.concatenate((coords_z, np.linspace(z_start[i], z_end[i], number_of_fluorophores_per_line[i])))
+        return number_of_fluorophores_per_line.sum(), coords_x, coords_y, coords_z
+
+    def get_curve_objects(self, number_of_curves):
+        number_of_fluorophores_per_curve = np.random.randint(128, 512, number_of_curves)
+        coords_x = np.array([])
+        coords_y = np.array([])
+        coords_z = np.array([])
+        for i in range(number_of_curves):
+            degrees = np.random.randint(2, 8, 3)
+            fx = np.poly1d(np.random.randint(-4, 4, size=(degrees[0] + 1)))
+            fy = np.poly1d(np.random.randint(-4, 4, size=(degrees[1] + 1)))
+            fz = np.poly1d(np.random.randint(-4, 4, size=(degrees[2] + 1)))
+            t = np.linspace(np.random.randint(-16, -2), np.random.randint(2, 16), number_of_fluorophores_per_curve[i])
+            x = fx(t)
+            y = fy(t)
+            z = fz(t)
+            x = (self.dx * self.nxh * 2) * (0.8 * (np.abs(x) / np.abs(x).max()) + 0.1)
+            y = (self.dx * self.nxh * 2) * (0.8 * (np.abs(y) / np.abs(y).max()) + 0.1)
+            z = (self.dz * self.nzh * 2) * (0.8 * (z / np.abs(z).max()) + 0.1)
+            coords_x = np.concatenate((coords_x, x))
+            coords_y = np.concatenate((coords_y, y))
+            coords_z = np.concatenate((coords_z, z))
+        return number_of_fluorophores_per_curve.sum(), coords_x, coords_y, coords_z
+
+    def get_objects(self, number_of_dots=None, number_of_lines=None, number_of_curves=None):
+        if number_of_dots is not None:
+            _n, _x, _y, _z = self.get_point_objects(number_of_dots)
+            self.number_of_fluorophores = self.number_of_fluorophores + _n
+            self.xps = np.concatenate((self.xps, _x))
+            self.yps = np.concatenate((self.yps, _y))
+            self.zps = np.concatenate((self.zps, _z))
+        if number_of_lines is not None:
+            _n, _x, _y, _z = self.get_line_objects(number_of_lines)
+            self.number_of_fluorophores = self.number_of_fluorophores + _n
+            self.xps = np.concatenate((self.xps, _x))
+            self.yps = np.concatenate((self.yps, _y))
+            self.zps = np.concatenate((self.zps, _z))
+        if number_of_curves is not None:
+            _n, _x, _y, _z = self.get_curve_objects(number_of_curves)
+            self.number_of_fluorophores = self.number_of_fluorophores + _n
+            self.xps = np.concatenate((self.xps, _x))
+            self.yps = np.concatenate((self.yps, _y))
+            self.zps = np.concatenate((self.zps, _z))
 
     def get_pupil(self, zarr=None):
         dp = 1 / (self.nxh * 2 * self.dx)
@@ -234,7 +241,7 @@ class sim:
 
     @staticmethod
     def _off_probability(I_off):
-        p_off = np.exp(-I_off * 12)
+        p_off = np.exp(-I_off * 8)
         return 0 if rd.random() > p_off else 1
 
     def _get_one_img_nl_2d(self, indices):
@@ -363,10 +370,10 @@ class sim:
 
 
 if __name__ == '__main__':
-    s = sim()
+    s = SIM()
     # s._get_line_objects(4, False)
     # s._get_point_objects(256, True)
-    s.get_both_objects(8, 1024)
+    s.get_objects(1024, 8, 8)
     s.get_pupil()
     # s._get_pupil(zarr=[0., 0., 0, 1.])
     # s.sim_2d()
