@@ -377,7 +377,7 @@ class SIM:
 
 if __name__ == '__main__':
     s = SIM()
-    s.get_objects(256, 4, 4, 4)
+    s.get_objects(512, 8, None, None)
     s.get_pupil()
     # s._get_pupil(zarr=[0., 0., 0, 1.])
     # s.sim_2d()
