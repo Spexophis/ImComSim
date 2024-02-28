@@ -1,7 +1,9 @@
 from pycompss.api.task import task
 from pycompss.api.api import compss_wait_on
-from pycompss.api.parameter import COLLECTION_IN, FILE_IN
+from pycompss.api.parameter import COLLECTION_IN, FILE_IN, COLLECTION_INOUT, COLLECTION_OUT, COLLECTION, INOUT, OUT
 import numpy as np
+
+
 # import pandas as pd
 
 
@@ -176,6 +178,7 @@ def shift_otfs_n_imgfs(_s, _psf, pattern_orientations, pattern_spacings, frequen
         _imgfs_sh.append(_imgf_sh)
     return _otfs_sh, _imgfs_sh
 
+
 @task(_angs=COLLECTION_IN, _sps=COLLECTION_IN, returns=2)
 def get_search(_angs, _sps, _steps, _ang_range, _sp_range, spacing_factor=1):
     if not spacing_factor == 1:
@@ -207,6 +210,7 @@ def get_overlap_w_zero(_s, _psf, otf_0, imf_0, shift_orientation, shift_spacing,
     # _msk = abs(otf_0 * otf_s) > _cutoff
     # a = np.sum(_msk * _w_1 * _w_0.conj()) / np.sum(_msk * _w_0 * _w_0.conj())
     return np.abs(a), np.angle(a)
+
 
 @task(returns=2)
 def map_overlap_w_zero_(_cp, od, _otf_0, _imgf_0, _ang_iters, _sp_iters, i, _psf, _dx, _xv, _yv, _cutoff):
@@ -279,6 +283,7 @@ def map_overlap(_cps, od, _otfs_0, _imgfs_0, _ang_iters, _sp_iters, _psf, _dx, _
     return _mag_arrs, _ph_arrs
 
 
+@task(_mag_arrs=COLLECTION_IN, _ph_arrs=COLLECTION_IN, returns=4)
 def get_parameters(_mag_arrs, _ph_arrs, _ang_iters, _sp_iters):
     _angles, _spacings, _magnitudes, _phases = [], [], [], []
     for i in range(len(_mag_arrs)):
@@ -290,7 +295,6 @@ def get_parameters(_mag_arrs, _ph_arrs, _ang_iters, _sp_iters):
     return _angles, _spacings, _magnitudes, _phases
 
 
-@task(returns=4)
 def get_maximum(_mag_arr, _ph_arr, _ang_iters, _sp_iters, i):
     _ang_iter = _ang_iters[i]
     _sp_iter = _sp_iters[i]
@@ -406,14 +410,17 @@ if __name__ == "__main__":
     sigma = 4.
     alpha = 0.04
     cutoff = 0.01
-    img, nx, ny, xv, yv, psf, radius, sep_mat, ang_iters, sp_iters = initial_functions(nang, nph, ratio, dx, na, wl, norders, angs, sps)
-    wd = window_function(alpha, nx)
 
+    img, nx, ny, xv, yv, psf, radius, sep_mat, ang_iters, sp_iters = initial_functions(nang, nph, ratio, dx, na, wl,
+                                                                                       norders, angs, sps)
+    wd = window_function(alpha, nx)
+    apd = apod(eta, nx, ny)
     cps, otfs_0, imgfs_0 = separate_orders(img, psf, nang, norders, sep_mat, ratio, wd)
     # searching
 
     mag_arrs, ph_arrs = map_overlap_w_zero(cps, 1, otfs_0, imgfs_0, ang_iters, sp_iters, psf, dx, xv, yv, cutoff)
     angles_1, spacings_1, magnitudes_1, phases_1 = get_parameters(mag_arrs, ph_arrs, ang_iters, sp_iters)
+    angles_1, spacings_1, magnitudes_1, phases_1 = compss_wait_on(angles_1, spacings_1, magnitudes_1, phases_1)
     # ang_iters, sp_iters = get_search(angles_1, spacings_1, 10, 0.005, 0.005)
     # mag_arrs, ph_arrs = map_overlap_w_zero(cps, 1, otf_0, imgf_0, ang_iters, sp_iters, psf, dx, xv, yv, cutoff)
     # mag_arrs, ph_arrs = compss_wait_on(mag_arrs, ph_arrs)
@@ -421,7 +428,9 @@ if __name__ == "__main__":
     otfs_1, imgfs_1 = shift_otfs_n_imgfs(cps, psf, angles_1, spacings_1, 1, nx, dx, xv, yv, strength, sigma)
     ang_iters, sp_iters = get_search(angles_1, spacings_1, 10, 0.005, 0.005, spacing_factor=2)
     mag_arrs, ph_arrs = map_overlap(cps, 2, otfs_1, imgfs_1, ang_iters, sp_iters, psf, dx, xv, yv, cutoff)
+
     angles_2, spacings_2, magnitudes_2, phases_2 = get_parameters(mag_arrs, ph_arrs, ang_iters, sp_iters)
+    angles_2, spacings_2, magnitudes_2, phases_2 = compss_wait_on(angles_2, spacings_2, magnitudes_2, phases_2)
     otfs_2, imgfs_2 = shift_otfs_n_imgfs(cps, psf, angles_2, spacings_2, 2, nx, dx, xv, yv, strength, sigma)
     mu = 0.08
 
@@ -429,8 +438,8 @@ if __name__ == "__main__":
     numera_1, denomi_1 = reconstruct_high_order(otfs_1, imgfs_1, magnitudes_1, phases_1, nx, ny)
     numera_2, denomi_2 = reconstruct_high_order(otfs_2, imgfs_2, magnitudes_2, phases_2, nx, ny)
 
-    apd = apod(eta, nx, ny)
-    imgrecon, imgfrecon = compss_wait_on(get_reconstructed_images(nx, ny, mu, apd, numera_0, numera_1, numera_2, denomi_0, denomi_1, denomi_2))
+    imgrecon, imgfrecon = compss_wait_on(
+        get_reconstructed_images(nx, ny, mu, apd, numera_0, numera_1, numera_2, denomi_0, denomi_1, denomi_2))
     write_results(imgrecon, imgfrecon)
     end_time = time.time()
     execution_time = end_time - start_time
