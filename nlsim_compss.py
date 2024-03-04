@@ -233,11 +233,10 @@ def clustered_w(_args):
     return _mag_arr_m, _ph_arr_m
 
 
-def map_overlap_w_zero_(_cp, od, otf_0, imgf_0, _ang_iter, sp_iter, psf, dx, xv, yv, _cutoff):
+def map_overlap_w_zero_(_cp, od, otf_0, imgf_0, _ang_iter, sp_iter, psf, dx, xv, yv, _cutoff, num_iters):
     _args = []
     _iter = 0
     _pos = 0
-    num_iters = 4
     _mag_arr = []
     _ph_arr = []
     for m, ang in enumerate(_ang_iter):
@@ -256,7 +255,7 @@ def map_overlap_w_zero_(_cp, od, otf_0, imgf_0, _ang_iter, sp_iter, psf, dx, xv,
     return _mag_arr, _ph_arr
 
 
-def map_overlap_w_zero(_cps, od, _otfs_0, _imgfs_0, _ang_iters, _sp_iters, _psf, _dx, _xv, _yv, _cutoff):
+def map_overlap_w_zero(_cps, od, _otfs_0, _imgfs_0, _ang_iters, _sp_iters, _psf, _dx, _xv, _yv, _cutoff, num_iters):
     _mag_arrs = [[]]
     _ph_arrs = [[]]
     _mag_arrs_ = []
@@ -265,7 +264,7 @@ def map_overlap_w_zero(_cps, od, _otfs_0, _imgfs_0, _ang_iters, _sp_iters, _psf,
     for i in range(len(_cps)):
         _mag_arr, _ph_arr = map_overlap_w_zero_(_cps[i], od, _otfs_0[i],
                                                 _imgfs_0[i], _ang_iters[i], _sp_iters[i], _psf,
-                                                _dx, _xv, _yv, _cutoff)
+                                                _dx, _xv, _yv, _cutoff, num_iters)
         _mag_arrs_.append(_mag_arr)
         _ph_arrs_.append(_ph_arr)
 
@@ -315,11 +314,10 @@ def clustered(_args):
     return _mag_arr_m, _ph_arr_m
 
 
-def map_overlap_(_cp, od, _otf_0, _imgf_0, _ang_iter, _sp_iter, _psf, _dx, _xv, _yv, _cutoff):
+def map_overlap_(_cp, od, _otf_0, _imgf_0, _ang_iter, _sp_iter, _psf, _dx, _xv, _yv, _cutoff, num_iters):
     _args = []
     _iter = 0
     _pos = 0
-    num_iters = 4
     _mag_arr = []
     _ph_arr = []
     for m, ang in enumerate(_ang_iter):
@@ -338,7 +336,7 @@ def map_overlap_(_cp, od, _otf_0, _imgf_0, _ang_iter, _sp_iter, _psf, _dx, _xv, 
     return _mag_arr, _ph_arr
 
 
-def map_overlap(_cps, od, _otfs_0, _imgfs_0, _ang_iters, _sp_iters, _psf, _dx, _xv, _yv, _cutoff):
+def map_overlap(_cps, od, _otfs_0, _imgfs_0, _ang_iters, _sp_iters, _psf, _dx, _xv, _yv, _cutoff, num_iters):
     _mag_arrs = [[]]
     _ph_arrs = [[]]
     _mag_arrs_ = []
@@ -347,7 +345,7 @@ def map_overlap(_cps, od, _otfs_0, _imgfs_0, _ang_iters, _sp_iters, _psf, _dx, _
     for i in range(len(_cps)):
         _mag_arr, _ph_arr = map_overlap_(_cps[i], od, _otfs_0[i],
                                                 _imgfs_0[i], _ang_iters[i], _sp_iters[i], _psf,
-                                                _dx, _xv, _yv, _cutoff)
+                                                _dx, _xv, _yv, _cutoff, num_iters)
         _mag_arrs_.append(_mag_arr)
         _ph_arrs_.append(_ph_arr)
 
@@ -490,7 +488,8 @@ if __name__ == "__main__":
     sigma = 4.
     alpha = 0.04
     cutoff = 0.01
-
+    # compss optimization
+    num_iters = 6
     img, nx, ny, xv, yv, psf, radius, sep_mat, ang_iters, sp_iters = compss_wait_on(
         initial_functions(nang, nph, ratio, dx, na, wl,
                           norders, angs, sps))
@@ -498,14 +497,14 @@ if __name__ == "__main__":
     apd = apod(eta, nx, ny)
     cps, otfs_0, imgfs_0 = compss_wait_on(separate_orders(img, psf, nang, norders, sep_mat, ratio, wd))
     # searching
-    mag_arrs, ph_arrs = map_overlap_w_zero(cps, 1, otfs_0, imgfs_0, ang_iters, sp_iters, psf, dx, xv, yv, cutoff)
+    mag_arrs, ph_arrs = map_overlap_w_zero(cps, 1, otfs_0, imgfs_0, ang_iters, sp_iters, psf, dx, xv, yv, cutoff, num_iters)
 
     angles_1, spacings_1, magnitudes_1, phases_1 = compss_wait_on(get_parameters(mag_arrs, ph_arrs, ang_iters, sp_iters))
 
     otfs_1, imgfs_1 = compss_wait_on(
         shift_otfs_n_imgfs(cps, psf, angles_1, spacings_1, 1, nx, dx, xv, yv, strength, sigma))
     ang_iters, sp_iters = compss_wait_on(get_search(angles_1, spacings_1, 10, 0.005, 0.005, spacing_factor=2))
-    mag_arrs, ph_arrs = map_overlap(cps, 2, otfs_1, imgfs_1, ang_iters, sp_iters, psf, dx, xv, yv, cutoff)
+    mag_arrs, ph_arrs = map_overlap(cps, 2, otfs_1, imgfs_1, ang_iters, sp_iters, psf, dx, xv, yv, cutoff, num_iters)
 
     angles_2, spacings_2, magnitudes_2, phases_2 = get_parameters(mag_arrs, ph_arrs, ang_iters, sp_iters)
     otfs_2, imgfs_2 = compss_wait_on(
