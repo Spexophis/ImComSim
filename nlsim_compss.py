@@ -1,7 +1,6 @@
 from pycompss.api.task import task
 from pycompss.api.api import compss_wait_on
-from pycompss.api.parameter import COLLECTION_IN, FILE_IN, COLLECTION_INOUT, COLLECTION_OUT, COLLECTION, INOUT, OUT, \
-    Type, Depth
+from pycompss.api.parameter import COLLECTION_IN
 import numpy as np
 
 
@@ -228,7 +227,7 @@ def clustered_w(_args):
     _mag_arr_m = []
     _ph_arr_m = []
     for _arg in _args:
-        _temp_m, _temp_p = map_overlap_w_zero_in(*_arg[1:])
+        _temp_m, _temp_p = map_overlap_w_zero_in(*_arg)
         _mag_arr_m.append(_temp_m)
         _ph_arr_m.append(_temp_p)
     return _mag_arr_m, _ph_arr_m
@@ -242,19 +241,17 @@ def map_overlap_w_zero_(_cp, od, otf_0, imgf_0, _ang_iter, sp_iter, psf, dx, xv,
     _mag_arr = []
     _ph_arr = []
     for m, ang in enumerate(_ang_iter):
-        _args.append([m, _cp, psf, otf_0, imgf_0, ang, od, dx, xv, yv, cutoff, sp_iter])
+        _args.append([_cp, psf, otf_0, imgf_0, ang, od, dx, xv, yv, cutoff, sp_iter])
         if ((_iter+1) % num_iters == 0 and not _iter == 1) or _iter == (len(_ang_iter)-1):
             if not _iter == (len(_ang_iter)-1):
                 _mag_arr_m, _ph_arr_m = clustered_w(_args)
                 _mag_arr.append(_mag_arr_m)
                 _ph_arr.append(_ph_arr_m)
-                _pos = _iter+1
             else:
                 _mag_arr_m, _ph_arr_m = clustered_w(_args)
                 _mag_arr.append(_mag_arr_m)
                 _ph_arr.append(_ph_arr_m)
-                _pos = 0
-                _args = []
+            _args = []
         _iter += 1
     return _mag_arr, _ph_arr
 
@@ -312,7 +309,7 @@ def clustered(_args):
     _mag_arr_m = []
     _ph_arr_m = []
     for _arg in _args:
-        _temp_m, _temp_p = map_overlap_in(*_arg[1:])
+        _temp_m, _temp_p = map_overlap_in(*_arg)
         _mag_arr_m.append(_temp_m)
         _ph_arr_m.append(_temp_p)
     return _mag_arr_m, _ph_arr_m
@@ -326,19 +323,17 @@ def map_overlap_(_cp, od, _otf_0, _imgf_0, _ang_iter, _sp_iter, _psf, _dx, _xv, 
     _mag_arr = []
     _ph_arr = []
     for m, ang in enumerate(_ang_iter):
-        _args.append([m, _cp, _psf, _otf_0[0], _imgf_0[0], ang, od, _dx, _xv, _yv, _cutoff, _sp_iter])
+        _args.append([_cp, _psf, _otf_0[0], _imgf_0[0], ang, od, _dx, _xv, _yv, _cutoff, _sp_iter])
         if ((_iter+1) % num_iters == 0 and not _iter == 1) or _iter == (len(_ang_iter)-1):
             if not _iter == (len(_ang_iter)-1):
                 _mag_arr_m, _ph_arr_m = clustered(_args)
                 _mag_arr.append(_mag_arr_m)
                 _ph_arr.append(_ph_arr_m)
-                _pos = _iter+1
             else:
                 _mag_arr_m, _ph_arr_m = clustered(_args)
                 _mag_arr.append(_mag_arr_m)
                 _ph_arr.append(_ph_arr_m)
-                _pos = 0
-                _args = []
+            _args = []
         _iter += 1
     return _mag_arr, _ph_arr
 
