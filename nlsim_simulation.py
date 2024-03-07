@@ -4,20 +4,21 @@ Ruizhe Lin
 2024-01-12
 """
 
+import concurrent.futures
+import time
+
 import numpy as np
 import numpy.random as rd
-from scipy.special import factorial
 import tifffile as tf
-import time
-import concurrent.futures
+from scipy.special import factorial
 
 
 class NLSIM:
 
     def __init__(self):
 
-        self.nxh = 64
-        self.nyh = 64
+        self.nxh = 128
+        self.nyh = 128
         self.nzh = 16
         self.dx = 0.08  # um
         self.dy = 0.08  # um
@@ -32,6 +33,7 @@ class NLSIM:
         self.xps = np.array([])
         self.yps = np.array([])
         self.zps = np.array([])
+        self.sw = np.array([])
         self.focal_plane = self.nzh
         self.I = None
         self.out = None
@@ -153,6 +155,7 @@ class NLSIM:
             self.xps = np.concatenate((self.xps, _x))
             self.yps = np.concatenate((self.yps, _y))
             self.zps = np.concatenate((self.zps, _z))
+        self.sw = np.ones(self.number_of_fluorophores)
 
     def get_pupil(self, zarr=None):
         dp = 1 / (self.nxh * 2 * self.dx)
@@ -169,8 +172,8 @@ class NLSIM:
 
     @staticmethod
     def _on_probability(I_on):
-        p_on = np.exp(-I_on * 5)
-        return 1 if rd.random() < p_on else 0
+        p_on = np.exp(-I_on * 2)
+        return 0 if rd.random() < p_on else 1
 
     @staticmethod
     def _off_probability(I_off):
@@ -191,13 +194,20 @@ class NLSIM:
         ny = self.nyh * 2
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
         for m in range(self.number_of_fluorophores):
-            I_off = 1 + np.cos(
-                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[indices[1]])
-            sw = self._off_probability(I_off)
-            I_read = sw * self.I * 0.5 * (1 + np.cos(
-                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
-            self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
-                                                                                                self.yps[m], I_read)
+            if self.sw[m]:
+                I_off = 1 + np.cos(
+                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[
+                        indices[1]])
+                self.sw[m] = self.sw[m] * self._off_probability(I_off)
+                if self.sw[m]:
+                    I_read = self.I * 0.5 * (1 + np.cos(
+                        self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
+                    self.sw[m] = self.sw[m] * self._off_probability(I_read)
+                    self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
+                                                                                                        self.yps[m],
+                                                                                                        I_read)
+            if self.sw[m] == 0:
+                self.sw[m] = self._on_probability(2)
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(
             self.out[indices[0] * self.number_of_phases + indices[1], :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
