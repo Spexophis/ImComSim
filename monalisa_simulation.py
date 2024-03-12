@@ -1,5 +1,5 @@
 """
-This script generates simulated data of the 2-dimensional nonlinear structured illumination microscopy.
+This script generates simulated data of the 2-dimensional parallelized RESOLFT microscopy.
 Ruizhe Lin
 2024-01-12
 """
@@ -15,7 +15,7 @@ from scipy.special import factorial
 import photophysics_simulator as phs
 
 
-class NLSIM:
+class PRESOLFT:
 
     def __init__(self):
 
@@ -244,7 +244,7 @@ class NLSIM:
             self.out[indices[0] * self.number_of_phases + indices[1], :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
-    def nlsim_2d(self, nang=7, nph=7, I=1600):
+    def sim_2d(self, nang=7, nph=7, I=1600):
         nx = self.nxh * 2
         ny = self.nxh * 2
         self.number_of_angles = nang
@@ -264,7 +264,7 @@ class NLSIM:
     def save_result_2d(self):
         t = time.strftime("%Y%m%d%H%M")
         path = t + '_'
-        tf.imwrite(path + 'nlsim2d_simulation_image_stack.tif', self.out, photometric='minisblack',
+        tf.imwrite(path + 'presolft2d_simulation_image_stack.tif', self.out, photometric='minisblack',
                    metadata={'number of phases': self.number_of_phases,
                              'number of angles': self.number_of_angles,
                              'pixel size (xy)': self.dx,
@@ -326,7 +326,7 @@ class NLSIM:
         self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.out[indices[0], indices[1], :, :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
-    def nlsim_3d(self, nang=3, nph=5, I=1000):
+    def sim_3d(self, nang=3, nph=5, I=1000):
         nx = self.nxh * 2
         ny = self.nxh * 2
         nz = self.nzh * 2
@@ -439,11 +439,11 @@ class NLSIM:
 
 
 if __name__ == '__main__':
-    s = NLSIM()
+    s = PRESOLFT()
     s.get_objects(1024, 8, 8, 8)
     s.get_pupil()
     # s._get_pupil(zarr=[0., 0., 0, 1.])
-    s.nlsim_2d()
+    s.sim_2d()
     s.save_result_2d()
     # s.nlsim_3d()
     # s.save_result_3d()
