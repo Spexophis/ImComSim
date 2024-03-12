@@ -244,7 +244,7 @@ class PRESOLFT:
             self.out[indices[0] * self.number_of_phases + indices[1], :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
-    def sim_2d(self, nang=7, nph=7, I=1600):
+    def sim_2d(self, nang=7, nph=7, I=1600, parallel=True):
         nx = self.nxh * 2
         ny = self.nxh * 2
         self.number_of_angles = nang
@@ -256,10 +256,15 @@ class PRESOLFT:
         self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
         self.out = np.zeros((self.number_of_angles * self.number_of_phases, nx, ny))
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
-        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-            print(future.result())
+        if parallel:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                print(future.result())
+        else:
+            for indices in indices_list:
+                results = self._get_one_img_2d(indices)
+                print(results)
 
     def save_result_2d(self):
         t = time.strftime("%Y%m%d%H%M")
@@ -326,7 +331,7 @@ class PRESOLFT:
         self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.out[indices[0], indices[1], :, :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
 
-    def sim_3d(self, nang=3, nph=5, I=1000):
+    def sim_3d(self, nang=3, nph=5, I=1000, parallel=True):
         nx = self.nxh * 2
         ny = self.nxh * 2
         nz = self.nzh * 2
@@ -341,10 +346,15 @@ class PRESOLFT:
         self.kz = (2 * np.pi / self.sp) * (1 - np.sqrt(1 - phim ** 2))
         self.out = np.zeros((self.number_of_angles, self.number_of_phases, nz, nx, ny))
         indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self._get_one_img_3d, indices) for indices in indices_list]
-        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-            print(future.result())
+        if parallel:
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = [executor.submit(self._get_one_img_3d, indices) for indices in indices_list]
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                print(future.result())
+        else:
+            for indices in indices_list:
+                results = self._get_one_img_3d(indices)
+                print(results)
 
     def save_result_3d(self):
         t = time.strftime("%Y%m%d%H%M")
