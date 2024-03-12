@@ -298,7 +298,7 @@ class PRESOLFT:
         radius = (self.na / self.wl) / dp
         sinphim = na / n2
         msk = self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius, origin=(0, 0))
-        rho = msk * self._radial_Array(shape=(self.nxh * 2, self.nyh * 2), f=lambda x: x, origin=(0, 0)) / radius
+        rho = msk * self._radial_array(shape=(self.nxh * 2, self.nyh * 2), f=lambda x: x, origin=(0, 0)) / radius
         return 2 * np.pi * msk * n2 * w * np.sqrt(1 - (sinphim * rho) ** 2) / wl
 
     def _get_one_img_3d(self, indices):
