@@ -4,7 +4,7 @@ Ruizhe Lin
 2024-01-10
 """
 
-from pylab import imshow, subplot, subplots, figure, colorbar
+from matplotlib.pyplot import imshow, subplot, subplots, figure, colorbar
 from scipy.special import factorial
 import numpy as np
 import tifffile as tf
@@ -531,7 +531,7 @@ class NLSIM_RECON:
 
 
 if __name__ == '__main__':
-    img = tf.imread(r"nlsim2d_simulation_data.tif")
+    img = tf.imread(r"202403131228_nlsim2d_simulation_image_stack.tif")
     p = NLSIM_RECON(image_stack=img,
                     image_pixel_size=0.08,
                     numerical_aperture=1.4,
@@ -544,12 +544,12 @@ if __name__ == '__main__':
                     pattern_spacings=[0.24, 0.24, 0.24, 0.24, 0.24, 0.24, 0.24])
     for i in range(7):
         p.separate(i)
-        p.mapoverlap_w_zero(order='first', nps=10, r_ang=0.005, r_sp=0.005, verbose=False)
-        p.mapoverlap(orders=['first', 'second'], nps=10, r_ang=0.005, r_sp=0.005, verbose=False)
-        p.mapoverlap(orders=['second', 'third'], nps=10, r_ang=0.005, r_sp=0.005, verbose=False)
+        p.mapoverlap_w_zero(order='first', nps=10, r_ang=0.005, r_sp=0.005, verbose=True)
+        p.mapoverlap(orders=['first', 'second'], nps=10, r_ang=0.005, r_sp=0.005, verbose=True)
+        p.mapoverlap(orders=['second', 'third'], nps=10, r_ang=0.005, r_sp=0.005, verbose=True)
     print(p.angles)
     print(p.spacings)
     print(p.magnitudes)
     # p.magnitudes = {i: {'first': 0.8, 'second': 0.4, 'third': 0.2, 'fourth': 0.1} for i in range(p.nang)}
     p.reconstruct_all(zero_order=True)
-    p.save_reconstruction()
+    p.save_reconstruction(fn=r"202403131228_")

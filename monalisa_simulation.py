@@ -232,12 +232,12 @@ class PRESOLFT:
                         indices[1]])
                 self.sw[m] = self.sw[m] * self._off_probability(I_off * self.pw_off, self.expo_off)
                 if self.sw[m]:
-                    I_read = self.I * 0.5 * (1 + np.cos(
-                        self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
+                    I_read = 1 + np.cos(
+                        self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]])
                     self.sw[m] = self.sw[m] * self._off_probability(I_read * self.pw_read, self.expo_read)
                     self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
                                                                                                         self.yps[m],
-                                                                                                        I_read)
+                                                                                                        self.I * 0.5 * I_read)
             if self.sw[m] == 0:
                 self.sw[m] = self._on_probability(self.pw_act, self.expo_act)
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(

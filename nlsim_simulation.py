@@ -19,8 +19,8 @@ class NLSIM:
 
     def __init__(self):
 
-        self.nxh = 128
-        self.nyh = 128
+        self.nxh = 80
+        self.nyh = 80
         self.nzh = 16
         self.dx = 0.08  # um
         self.dy = 0.08  # um
@@ -40,12 +40,13 @@ class NLSIM:
         self.I = None
         self.out = None
         self.cam_offset = 80.0
-        self.pw_act = 0.2  # kW/cm2
-        self.pw_off = 5.0
+        self.pw_act = 0.5  # kW/cm2
+        self.pw_off = 0.8
         self.pw_read = 1.0
-        self.expo_act = 0.1  # ms
-        self.expo_off = 2.0
+        self.expo_act = 0.5  # ms
+        self.expo_off = 0.8
         self.expo_read = 1.0
+        self.qy = 0.65
         self.rsEGFP2_on_state = phs.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
                                                       extincion_coeff_off=[22000, 60],
                                                       wavelength=[405, 488],
@@ -63,7 +64,7 @@ class NLSIM:
                                                        qy_cis_to_trans_anionic=1.65E-2,
                                                        qy_trans_to_cis_neutral=0.33,
                                                        qy_fluorescence_on=0.35,
-                                                       initial_populations=[0, 0, 1, 0])
+                                                       initial_populations=[1, 0, 0, 0])
 
     def get_point_objects(self, number_of_dots):
         coords_x = (self.dx * self.nxh * 2) * (0.8 * rd.rand(number_of_dots) + 0.1)
@@ -72,7 +73,7 @@ class NLSIM:
         return number_of_dots, coords_x, coords_y, coords_z
 
     def get_line_objects(self, number_of_lines):
-        number_of_fluorophores_per_line = np.random.randint(128, 512, number_of_lines)
+        number_of_fluorophores_per_line = np.random.randint(256, 1024, number_of_lines)
         x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
@@ -89,7 +90,7 @@ class NLSIM:
         return number_of_fluorophores_per_line.sum(), coords_x, coords_y, coords_z
 
     def get_polynomial_objects(self, number_of_polynomials):
-        number_of_fluorophores_per_polynomial = np.random.randint(128, 512, number_of_polynomials)
+        number_of_fluorophores_per_polynomial = np.random.randint(256, 1024, number_of_polynomials)
         coords_x = np.array([])
         coords_y = np.array([])
         coords_z = np.array([])
@@ -202,7 +203,7 @@ class NLSIM:
         on_switching_experiment = phs.Experiment(illumination=on_switching_pulse, fluorophore=self.rsEGFP2_off_state)
         populations = on_switching_experiment.solve_kinetics(0.01)
         p_on = populations[-1, 2]
-        return 0 if rd.random() < p_on else 1
+        return 1 if rd.random() < p_on else 0
 
     def _off_probability(self, pw=0.5, expo=1.0):
         off_switching_pulse = phs.ModulatedLasers(wavelengths=[405, 488], power_densities=[0.0, pw],
@@ -210,7 +211,7 @@ class NLSIM:
         off_switching_experiment = phs.Experiment(illumination=off_switching_pulse, fluorophore=self.rsEGFP2_on_state)
         populations = off_switching_experiment.solve_kinetics(0.01)
         p_off = populations[-1, 0]
-        return 0 if rd.random() > p_off else 1
+        return 0 if rd.random() < p_off else 1
 
     def _add_psf_2d(self, x, y, I):
         nx = self.nxh * 2
@@ -227,17 +228,18 @@ class NLSIM:
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
         for m in range(self.number_of_fluorophores):
             if self.sw[m]:
-                I_off = 1 + np.cos(
+                I_off = 0.5 * (1 + np.cos(
                     self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[
-                        indices[1]])
+                        indices[1]]))
                 self.sw[m] = self.sw[m] * self._off_probability(I_off * self.pw_off, self.expo_off)
                 if self.sw[m]:
-                    I_read = self.I * 0.5 * (1 + np.cos(
+                    I_read = 0.5 * (1 + np.cos(
                         self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
                     self.sw[m] = self.sw[m] * self._off_probability(I_read * self.pw_read, self.expo_read)
-                    self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
-                                                                                                        self.yps[m],
-                                                                                                        I_read)
+                    if rd.random() < self.qy:
+                        self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
+                                                                                                            self.yps[m],
+                                                                                                            self.I * I_read)
             if self.sw[m] == 0:
                 self.sw[m] = self._on_probability(self.pw_act, self.expo_act)
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(
@@ -450,10 +452,10 @@ class NLSIM:
 
 if __name__ == '__main__':
     s = NLSIM()
-    s.get_objects(1024, 8, 8, 8)
+    s.get_objects(1024, 6, 6, 6)
     s.get_pupil()
     # s._get_pupil(zarr=[0., 0., 0, 1.])
-    s.nlsim_2d()
+    s.nlsim_2d(parallel=False)
     s.save_result_2d()
     # s.nlsim_3d()
     # s.save_result_3d()
