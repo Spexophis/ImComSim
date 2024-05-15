@@ -531,7 +531,7 @@ class NLSIM_RECON:
 
 
 if __name__ == '__main__':
-    img = tf.imread(r"202403131228_nlsim2d_simulation_image_stack.tif")
+    img = tf.imread(r"202405151207_nlsim2d_simulation_image_stack.tif")
     p = NLSIM_RECON(image_stack=img,
                     image_pixel_size=0.08,
                     numerical_aperture=1.4,

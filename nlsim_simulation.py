@@ -41,9 +41,9 @@ class NLSIM:
         self.out = None
         self.cam_offset = 80.0
         self.pw_act = 0.5  # kW/cm2
-        self.pw_off = 0.8
+        self.pw_off = 1.0
         self.pw_read = 1.0
-        self.expo_act = 0.5  # ms
+        self.expo_act = 0.6  # ms
         self.expo_off = 0.8
         self.expo_read = 1.0
         self.qy = 0.65
