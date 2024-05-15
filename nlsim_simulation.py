@@ -213,14 +213,31 @@ class NLSIM:
         p_off = populations[-1, 0]
         return 0 if rd.random() < p_off else 1
 
-    def _add_psf_2d(self, x, y, I):
+    def _add_psf_2d(self, x, y, n_photons):
         nx = self.nxh * 2
         ny = self.nyh * 2
         alpha = 2 * np.pi / nx / self.dx
         gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
         ph = self._shift(np.fromfunction(gxy, (nx, ny), dtype=np.float32))
-        wfp = np.sqrt(I) * ph * self.wf
-        return np.abs(np.fft.fft2(wfp)) ** 2
+        wfp = ph * self.wf
+        psf_dist = np.abs(np.fft.fft2(wfp)) ** 2
+        psf_dist /= psf_dist.sum()
+        psf_img = self._generate_photon_distributions(int(n_photons), psf_dist)
+        return psf_img
+
+    def _generate_photon_distributions(self, n, distribution_map):
+        flat_distribution = distribution_map.flatten()
+        indices = np.random.choice(np.arange(len(flat_distribution)), size=n, p=flat_distribution)
+        distributions = np.column_stack(np.unravel_index(indices, distribution_map.shape))
+        counts = self._count_photons(distributions)
+        return counts
+
+    def _count_photons(self, points):
+        counts = np.zeros((self.nxh * 2, self.nyh * 2), dtype=int)
+        for point in points:
+            x, y = point
+            counts[x, y] += 1
+        return counts
 
     def _get_one_img_2d(self, indices):
         nx = self.nxh * 2
@@ -455,7 +472,7 @@ if __name__ == '__main__':
     s.get_objects(1024, 6, 6, 6)
     s.get_pupil()
     # s._get_pupil(zarr=[0., 0., 0, 1.])
-    s.nlsim_2d(parallel=False)
+    s.nlsim_2d(parallel=True)
     s.save_result_2d()
     # s.nlsim_3d()
     # s.save_result_3d()
