@@ -10,7 +10,7 @@ import time
 import numpy as np
 import numpy.random as rd
 import tifffile as tf
-from scipy.special import factorial
+from scipy.special import factorial, j0, j1
 
 import photophysics_simulator as phs
 
@@ -64,6 +64,8 @@ class PRESOLFT:
                                                        qy_trans_to_cis_neutral=0.33,
                                                        qy_fluorescence_on=0.35,
                                                        initial_populations=[0, 0, 1, 0])
+        rs_xy = 0.61 * self.wl / self.na  # Rayleigh lateral resolution
+        rs_z = 2 * self.n2 * self.wl / self.na ** 2  # Rayleigh axial resolution
 
     def get_point_objects(self, number_of_dots):
         coords_x = (self.dx * self.nxh * 2) * (0.8 * rd.rand(number_of_dots) + 0.1)
@@ -195,6 +197,17 @@ class PRESOLFT:
                 n, m = self._zernike_j_nm(z + 1)
                 phi += zarr[z] * self._zernike(n, m, radius=radius, shape=(self.nxh * 2, self.nyh * 2))
             self.wf *= np.exp(1j * phi).astype(np.complex64)
+
+    def get_focus(self, r_um, z_um, lambda_um, verbose=True):
+        n = 1.51
+        v = (2 * np.pi * self.na / lambda_um) * r_um
+        u = (2 * np.pi * self.na ** 2 / (n * lambda_um)) * z_um
+
+        with np.errstate(divide='ignore', invalid='ignore'):  # avoid div 0 error
+            ir = (2 * j1(v) / v) ** 2  # normalized radial intensity
+        if np.isnan(ir): ir = 1
+        iz = np.sinc((u / 4) / np.pi) ** 2  # normalized axial intensity
+        pwr = 1 - j0(v) ** 2 - j1(v) ** 2  # normalized power thru aperture
 
     def _on_probability(self, pw=0.5, expo=1.0):
         on_switching_pulse = phs.ModulatedLasers(wavelengths=[405, 488], power_densities=[pw, 0.0],
