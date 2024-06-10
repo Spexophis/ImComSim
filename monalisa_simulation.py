@@ -198,7 +198,7 @@ class PRESOLFT:
                 phi += zarr[z] * self._zernike(n, m, radius=radius, shape=(self.nxh * 2, self.nyh * 2))
             self.wf *= np.exp(1j * phi).astype(np.complex64)
 
-    def get_focus(self, r_um, z_um, lambda_um, verbose=True):
+    def get_focus(self, r_um, z_um, lambda_um, ):
         n = 1.51
         v = (2 * np.pi * self.na / lambda_um) * r_um
         u = (2 * np.pi * self.na ** 2 / (n * lambda_um)) * z_um
