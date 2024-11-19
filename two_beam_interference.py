@@ -107,7 +107,7 @@ BAngle = 0 * np.pi / 180
 BeamOffset = 0
 # e0 = plane_wave(Z[0, :], Y[0, :], 0, -BeamOffset, BeamSize, BAngle)
 # e1 = gaussian_beam(Z[0, :], Y[0, :], 0, BeamOffset, BeamSize, -BAngle)
-zo = lens[1] - 20
+zo = le[1] - 20
 E = spherical_wave(Z[0, :], Y[0, :], -zo, 25, 1.0, 0 * np.pi / 180) + spherical_wave(Z[0, :], Y[0, :], -zo, -25, 1.0, 0 * np.pi / 180)
 
 phase, intensity = propagation(space=(z_pts, y_pts), einput=E, idm=nr, dyz=(dy, dz))
