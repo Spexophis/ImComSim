@@ -87,9 +87,9 @@ def propagation(space, einput, idm, dyz, wavelength=0.488):
 
 
 zmin = 0
-zmax = 160
-ymin = -80
-ymax = 80
+zmax = 320
+ymin = -160
+ymax = 160
 dz = 0.02
 dy = 0.02
 zoom = 1
@@ -97,22 +97,20 @@ Z, Y = np.mgrid[zmin / zoom:zmax / zoom:dz / zoom, ymin / zoom:ymax / zoom:dy / 
 z_pts, y_pts = np.shape(Z)
 
 nr = np.zeros((z_pts, y_pts))
-nr += generate_lens(axs=(Z, Y))[0]
+le = generate_lens(axs=(Z, Y))
+nr += le[0]
 # nr += generate_ri_spheres(axs=(Z, Y), space=(z_pts, y_pts))
 nr += generate_layer(axs=(Z, Y), space=(z_pts, y_pts))
 
 BeamSize = 30
 BAngle = 0 * np.pi / 180
 BeamOffset = 0
-e0 = plane_wave(Z[0, :], Y[0, :], 0, -BeamOffset, BeamSize, BAngle)
+# e0 = plane_wave(Z[0, :], Y[0, :], 0, -BeamOffset, BeamSize, BAngle)
 # e1 = gaussian_beam(Z[0, :], Y[0, :], 0, BeamOffset, BeamSize, -BAngle)
+zo = lens[1] - 20
+E = spherical_wave(Z[0, :], Y[0, :], -zo, 25, 1.0, 0 * np.pi / 180) + spherical_wave(Z[0, :], Y[0, :], -zo, -25, 1.0, 0 * np.pi / 180)
 
-na = 1.4
-wl = 0.488
-resolution = wl / (2 * na)
-sigma = resolution / (2 * np.sqrt(2 * np.log(2)))
-
-phase, intensity = propagation(space=(z_pts, y_pts), einput=e0, idm=nr, dyz=(dy, dz))
+phase, intensity = propagation(space=(z_pts, y_pts), einput=E, idm=nr, dyz=(dy, dz))
 
 # plt.figure(figsize=(16, 10))
 # plt.plot(Y[1, 400:1200], intensity[0, 400:1200], label="initial", linewidth=1.0)
