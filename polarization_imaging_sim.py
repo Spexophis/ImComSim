@@ -187,8 +187,8 @@ class POLAR:
         oy = ny / 2
         x = np.linspace(-ox, ox - 1, nx)
         y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
+        xv, yv = np.meshgrid(x, y)
+        rho = np.sqrt(xv ** 2 + yv ** 2)
         disc = (rho < radius)
         if not origin is None:
             s0 = origin[0] - int(nx / 2)
