@@ -1,4 +1,4 @@
-import concurrent.futures
+import os
 import time
 import matplotlib
 import matplotlib.pyplot as plt
@@ -133,10 +133,12 @@ class POLAR:
             self.get_one_img_2d(i)
         self.out = rd.poisson(self.out)
 
-    def save_result_2d(self):
+    def save_result_2d(self, fd=None):
         t = time.strftime("%Y%m%d%H%M")
-        path = t + '_'
-        tf.imwrite(path + 'pol_cam_simulation_image.tif', self.out)
+        if fd is None:
+            tf.imwrite(t + '_pol_cam_simulation_image.tif', self.out)
+        else:
+            tf.imwrite(os.path.join(fd, t + '_pol_cam_simulation_image.tif'), self.out)
 
     @staticmethod
     def _normalize(coord, range_):
