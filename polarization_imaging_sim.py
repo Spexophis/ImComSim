@@ -26,7 +26,7 @@ class POLAR:
         self.yps = np.array([])
         self.d_x = np.array([])
         self.d_y = np.array([])
-        self.illu = 100
+        self.illu = 1
         self.out = None
         self.cam_offset = 80.0
 
@@ -59,7 +59,7 @@ class POLAR:
             dev_y = np.concatenate((dev_y, dy))
         return number_of_fluo_per_polynomial.sum(), cords_x, cords_y, dev_x, dev_y
 
-    def get_objects(self, number_of_polynomials=8, verbose=False):
+    def get_objects(self, number_of_polynomials=8):
         _n, _x, _y, _dx, _dy = self.get_polynomial_objects(number_of_polynomials)
         self.num_of_fluo = _n
         self.xps = _x
@@ -69,17 +69,6 @@ class POLAR:
         unit_dy = _dy / magnitude
         self.d_x = unit_dx
         self.d_y = unit_dy
-        if verbose:
-            plt.figure(figsize=(10, 10))
-            plt.scatter(_x, _y, s=8, label="Points")
-            plt.quiver(_x, _y, unit_dx, unit_dy, angles="xy", scale_units="xy", scale=1,
-                       color="red", alpha=0.5, label="Derivative Vectors")
-            plt.title("Polynomial Points and Derivative Vectors")
-            plt.xlabel("X Coordinate")
-            plt.ylabel("Y Coordinate")
-            plt.legend()
-            plt.axis("equal")
-            plt.show()
 
     def get_pupil(self):
         dp = 1 / (self.nxh * 2 * self.dx)
@@ -133,11 +122,23 @@ class POLAR:
             self.get_one_img_2d(i)
         self.out = rd.poisson(self.out)
 
-    def save_result_2d(self, fd=None):
+    def save_result_2d(self, fd=None, verbose=False):
+        if verbose:
+            plt.figure(figsize=(10, 10))
+            plt.scatter(self.xps, self.yps, s=8, label="Points")
+            plt.quiver(self.xps, self.yps, self.d_x, self.d_y, angles="xy", scale_units="xy", scale=1,
+                       color="red", alpha=0.5, label="Vectors")
+            plt.title("Points and Vectors")
+            plt.xlabel("X Coordinate")
+            plt.ylabel("Y Coordinate")
+            plt.legend()
+            plt.axis("equal")
         t = time.strftime("%Y%m%d%H%M")
         if fd is None:
+            plt.savefig(fname=t + '_pol_cam_simulation_vmap.png', dpi=600)
             tf.imwrite(t + '_pol_cam_simulation_image.tif', self.out)
         else:
+            plt.savefig(fname=os.path.join(fd, t + '_pol_cam_simulation_vmap.png'), dpi=600)
             tf.imwrite(os.path.join(fd, t + '_pol_cam_simulation_image.tif'), self.out)
 
     @staticmethod
@@ -203,5 +204,5 @@ if __name__ == '__main__':
     s = POLAR()
     s.get_objects(8)
     s.get_pupil()
-    s.generate_data_2d()
-    s.save_result_2d()
+    s.generate_data_2d(intensity=100)
+    s.save_result_2d(r"C:\Users\ruizhe.lin\Desktop")
