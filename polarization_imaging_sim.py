@@ -151,29 +151,6 @@ class POLAR:
             self.get_one_img_2d(i)
         self.out = np.random.poisson(self.out)
 
-    def save_result_2d(self, fd=None, verbose=False):
-        if verbose:
-            plt.figure(figsize=(10, 10))
-            plt.scatter(self.xps, self.yps, s=8, label="Points")
-            plt.quiver(self.xps, self.yps, self.d_x, self.d_y, angles="xy", scale_units="xy", scale=1,
-                       color="red", alpha=0.5, label="Vectors")
-            plt.title("Points and Vectors")
-            plt.xlabel("X Coordinate")
-            plt.ylabel("Y Coordinate")
-            plt.legend()
-            plt.axis("equal")
-
-        if self.i_x is not None or self.i_y is not None:
-            self.t = self.t + r"_lpi"
-        else:
-            self.t = self.t + r"_cpi"
-        if fd is None:
-            plt.savefig(fname=self.t + '_pol_cam_simulation_vmap.png', dpi=600)
-            tf.imwrite(self.t + '_pol_cam_simulation_image.tif', self.out)
-        else:
-            plt.savefig(fname=os.path.join(fd, self.t + '_pol_cam_simulation_vmap.png'), dpi=600)
-            tf.imwrite(os.path.join(fd, self.t + '_pol_cam_simulation_image.tif'), self.out)
-
     @staticmethod
     def _normalize(coord, range_):
         r = np.max(coord) - np.min(coord)
@@ -251,13 +228,82 @@ class POLAR:
         return disc
 
 
+class RECON(POLAR):
+    def __init__(self):
+        super().__init__()
+        self.img_0 = None
+        self.img_45 = None
+        self.img_90 = None
+        self.img_135 = None
+        self.res = None
+
+    def load_data(self, fd=None):
+        if fd is not None:
+            self.out = tf.imread(fd)
+
+    def sub_bg(self, bg):
+        self.out[self.out > bg] = self.out[self.out>bg] - bg
+        self.out[self.out <= bg] = 0
+
+    def split_channels(self):
+        self.img_0 = self._interp(p.out[1::2, 1::2], 2)
+        self.img_45 = self._interp(p.out[::2, 1::2], 2)
+        self.img_90 = self._interp(p.out[::2, ::2], 2)
+        self.img_135 = self._interp(p.out[1::2, ::2], 2)
+
+    def compute_anisotropy(self):
+        horizontal = self.img_0
+        vertical = self.img_90
+        self.res = (horizontal - vertical) / (horizontal + 2 * vertical)
+
+    def save_results(self, fd=None, verbose=False):
+        if verbose:
+            sizes = 4 + 80 * p.sz / p.sz.max()
+            plt.figure(figsize=(10, 10))
+            plt.scatter(self.xps, self.yps, s=sizes, label="Points")
+            plt.quiver(self.xps, self.yps, self.d_x, self.d_y, angles="xy", scale_units="xy", scale=1,
+                       color="red", alpha=0.5, label="Vectors")
+            plt.title("Points and Vectors")
+            plt.xlabel("X Coordinate")
+            plt.ylabel("Y Coordinate")
+            plt.legend()
+            plt.axis("equal")
+        if self.i_x is not None or self.i_y is not None:
+            self.t = self.t + r"_lpi"
+        else:
+            self.t = self.t + r"_cpi"
+        if fd is None:
+            plt.savefig(fname=self.t + '_pol_cam_simulation_vmap.png', dpi=600)
+            tf.imwrite(self.t + '_pol_cam_simulation_image.tif', self.out)
+            tf.imwrite(self.t + '_pol_cam_simulation_anisotropy.tif', self.res)
+        else:
+            plt.savefig(fname=os.path.join(fd, self.t + '_pol_cam_simulation_vmap.png'), dpi=600)
+            tf.imwrite(str(os.path.join(fd, self.t + '_pol_cam_simulation_image.tif')), self.out)
+            tf.imwrite(str(os.path.join(fd, self.t + '_pol_cam_simulation_anisotropy.tif')), self.res)
+
+    @staticmethod
+    def _interp(arr, ratio):
+        nx, ny = arr.shape
+        px = int((nx * (ratio - 1)) / 2)
+        py = int((ny * (ratio - 1)) / 2)
+        arf = np.fft.fft2(arr)
+        aro = np.pad(np.fft.fftshift(arf), ((px, px), (py, py)), 'constant', constant_values=(0, 0))
+        return np.abs(np.fft.ifft2(np.fft.fftshift(aro)))
+
+
 if __name__ == '__main__':
-    p = POLAR()
+    p = RECON()
     p.get_objects(number_of_polynomials=8)
     p.get_pupil()
     p.get_illumination(intensity=20)
     p.generate_data_2d()
-    p.save_result_2d(r"C:\Users\ruizhe.lin\Desktop", True)
+    p.sub_bg(80)
+    p.split_channels()
+    p.compute_anisotropy()
+    p.save_results(r"C:\Users\ruizhe.lin\Desktop\polcam_an", True)
     p.get_illumination(intensity=20, pol=45)
     p.generate_data_2d()
-    p.save_result_2d(r"C:\Users\ruizhe.lin\Desktop", True)
+    p.sub_bg(80)
+    p.split_channels()
+    p.compute_anisotropy()
+    p.save_results(r"C:\Users\ruizhe.lin\Desktop\polcam_an", True)
