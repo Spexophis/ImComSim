@@ -1,9 +1,9 @@
 import os
 import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import numpy.random as rd
 import tifffile as tf
 
 matplotlib.use('QtAgg')
@@ -26,12 +26,24 @@ class POLAR:
         self.yps = np.array([])
         self.d_x = np.array([])
         self.d_y = np.array([])
+        self.sz = np.array([])
+        self.d_r = np.array([])
+        self.i_x = None
+        self.i_y = None
         self.illu = 1
         self.out = None
         self.cam_offset = 80.0
+        self.lft = 2.5e-9  # s
+        self.sampling = 10
+        self.kb = 1.38e-23
+        self.ita = 0.001  # 1.2 - glycerol at 25 degree temperature
+        self.temperature = 298  # K
+        self.t = None
 
     def get_polynomial_objects(self, number_of_polynomials):
         number_of_fluo_per_polynomial = np.random.randint(256, 1024, number_of_polynomials)
+        ms = np.array([])
+        mdr = np.array([])
         cords_x = np.array([])
         cords_y = np.array([])
         dev_x = np.array([])
@@ -41,6 +53,10 @@ class POLAR:
         x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
         y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
         for i in range(number_of_polynomials):
+            r = np.random.randint(2, 200) * 1e-9 * np.ones(number_of_fluo_per_polynomial[i])
+            ms = np.concatenate((ms, r))
+            dr = (3 * self.kb * self.temperature) / (4 * np.pi * self.ita * (r ** 3))
+            mdr = np.concatenate((mdr, np.sqrt(2 * dr * self.lft)))
             degrees = np.random.randint(2, 8, 3)
             poly_x = np.poly1d(np.random.uniform(-1, 1, size=(degrees[0] + 1)))
             poly_y = np.poly1d(np.random.uniform(-1, 1, size=(degrees[1] + 1)))
@@ -57,10 +73,10 @@ class POLAR:
             dy = poly_dy(t)
             dev_x = np.concatenate((dev_x, dx))
             dev_y = np.concatenate((dev_y, dy))
-        return number_of_fluo_per_polynomial.sum(), cords_x, cords_y, dev_x, dev_y
+        return number_of_fluo_per_polynomial.sum(), cords_x, cords_y, dev_x, dev_y, ms, mdr
 
     def get_objects(self, number_of_polynomials=8):
-        _n, _x, _y, _dx, _dy = self.get_polynomial_objects(number_of_polynomials)
+        _n, _x, _y, _dx, _dy, _r, _dr = self.get_polynomial_objects(number_of_polynomials)
         self.num_of_fluo = _n
         self.xps = _x
         self.yps = _y
@@ -69,14 +85,25 @@ class POLAR:
         unit_dy = _dy / magnitude
         self.d_x = unit_dx
         self.d_y = unit_dy
+        self.sz = _r
+        self.d_r = _dr
+        self.t = time.strftime("%Y%m%d%H%M")
 
     def get_pupil(self):
         dp = 1 / (self.nxh * 2 * self.dx)
-        radius = (self.na / self.wl) / dp
-        msk = self._shift(self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)) / np.sqrt(
-            np.pi * radius ** 2) / (self.nxh * 2)
+        radi = (self.na / self.wl) / dp
+        msk = self._shift(self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radi)) / np.sqrt(
+            np.pi * radi ** 2) / (self.nxh * 2)
         phi = np.zeros((self.nxh * 2, self.nyh * 2))
         self.wf = msk * np.exp(1j * phi).astype(np.complex64)
+
+    def get_illumination(self, intensity=1000, pol=None):
+        if pol is not None:
+            ang = pol * np.pi / 180
+            self.i_x, self.i_y = np.cos(ang), np.sin(ang)
+        else:
+            self.i_x, self.i_y = None, None
+        self.illu = intensity
 
     def add_psf_2d(self, x, y, n_photons):
         nx = self.nxh * 2
@@ -105,22 +132,24 @@ class POLAR:
         return counts
 
     def get_one_img_2d(self, idx):
-        nx = self.nxh * 2
-        ny = self.nyh * 2
-        pix_map = self._vector_to_pixel_map(self.d_x[idx], self.d_y[idx])
-        pol_msk = np.tile(pix_map, (self.nxh, self.nyh))
-        pol_cam = pol_msk * self.add_psf_2d(self.xps[idx], self.yps[idx], self.illu)
-        self.out += pol_cam
+        for i in range(self.sampling):
+            rta = i * self.d_r[idx] / self.sampling
+            rdx, rdy = self._rotate_vector(self.d_x[idx], self.d_y[idx], rta)
+            pix_map = self._vector_to_pixel_map(rdx, rdy)
+            pol_msk = np.tile(pix_map, (self.nxh, self.nyh))
+            if self.i_x is not None or self.i_y is not None:
+                exc = self.illu * self._vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
+            else:
+                exc = self.illu
+            pol_cam = pol_msk * self.add_psf_2d(self.xps[idx], self.yps[idx], exc)
+            self.out += pol_cam
         return idx, 'done'
 
-    def generate_data_2d(self, intensity=100):
-        nx = self.nxh * 2
-        ny = self.nxh * 2
-        self.illu = intensity
-        self.out = np.zeros((nx, ny)) + self.cam_offset
+    def generate_data_2d(self):
+        self.out = np.zeros((self.nxh * 2, self.nxh * 2)) + self.cam_offset
         for i in range(self.num_of_fluo):
             self.get_one_img_2d(i)
-        self.out = rd.poisson(self.out)
+        self.out = np.random.poisson(self.out)
 
     def save_result_2d(self, fd=None, verbose=False):
         if verbose:
@@ -133,13 +162,17 @@ class POLAR:
             plt.ylabel("Y Coordinate")
             plt.legend()
             plt.axis("equal")
-        t = time.strftime("%Y%m%d%H%M")
-        if fd is None:
-            plt.savefig(fname=t + '_pol_cam_simulation_vmap.png', dpi=600)
-            tf.imwrite(t + '_pol_cam_simulation_image.tif', self.out)
+
+        if self.i_x is not None or self.i_y is not None:
+            self.t = self.t + r"_lpi"
         else:
-            plt.savefig(fname=os.path.join(fd, t + '_pol_cam_simulation_vmap.png'), dpi=600)
-            tf.imwrite(os.path.join(fd, t + '_pol_cam_simulation_image.tif'), self.out)
+            self.t = self.t + r"_cpi"
+        if fd is None:
+            plt.savefig(fname=self.t + '_pol_cam_simulation_vmap.png', dpi=600)
+            tf.imwrite(self.t + '_pol_cam_simulation_image.tif', self.out)
+        else:
+            plt.savefig(fname=os.path.join(fd, self.t + '_pol_cam_simulation_vmap.png'), dpi=600)
+            tf.imwrite(os.path.join(fd, self.t + '_pol_cam_simulation_image.tif'), self.out)
 
     @staticmethod
     def _normalize(coord, range_):
@@ -149,6 +182,24 @@ class POLAR:
         else:
             return (coord - np.min(coord)) / (np.max(coord) - np.min(coord)) * np.abs(range_[1] - range_[0]) + np.min(
                 range_)
+
+    @staticmethod
+    def _rotate_vector(xv, yv, theta_rad):
+        cos_theta = np.cos(theta_rad)
+        sin_theta = np.sin(theta_rad)
+        x_rot = xv * cos_theta - yv * sin_theta
+        y_rot = xv * sin_theta + yv * cos_theta
+        return x_rot, y_rot
+
+    @staticmethod
+    def _vector_projection(ix, iy, xx, yy):
+        v = np.array([ix, iy])
+        d = np.array([xx, yy])
+        if not np.isclose(np.linalg.norm(v), 1.0) or not np.isclose(np.linalg.norm(d), 1.0):
+            raise ValueError("Both v and d must be unit vectors.")
+        proj_v = np.dot(v, d) * d
+        projection = np.sqrt(np.dot(proj_v, proj_v)) / np.sqrt(np.dot(v, v))
+        return projection
 
     @staticmethod
     def _vector_to_pixel_map(_dx, _dy):
@@ -184,7 +235,7 @@ class POLAR:
         return arr
 
     @staticmethod
-    def _disc_array(shape=(128, 128), radius=64, origin=None):
+    def _disc_array(shape=(128, 128), radius=64., origin=None):
         nx, ny = shape
         ox = nx / 2
         oy = ny / 2
@@ -201,8 +252,12 @@ class POLAR:
 
 
 if __name__ == '__main__':
-    s = POLAR()
-    s.get_objects(8)
-    s.get_pupil()
-    s.generate_data_2d(intensity=100)
-    s.save_result_2d(r"C:\Users\ruizhe.lin\Desktop")
+    p = POLAR()
+    p.get_objects(number_of_polynomials=8)
+    p.get_pupil()
+    p.get_illumination(intensity=20)
+    p.generate_data_2d()
+    p.save_result_2d(r"C:\Users\ruizhe.lin\Desktop", True)
+    p.get_illumination(intensity=20, pol=45)
+    p.generate_data_2d()
+    p.save_result_2d(r"C:\Users\ruizhe.lin\Desktop", True)
