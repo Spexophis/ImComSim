@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tifffile as tf
 
-matplotlib.use('QtAgg')
+matplotlib.use('Qt5Agg')
 plt.ion()
 
 
