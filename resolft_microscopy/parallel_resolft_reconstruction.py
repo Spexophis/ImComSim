@@ -191,8 +191,8 @@ class ImageReconstruction:
         return g
 
     def extract_periods(self):
-        self.image_avg = np.average(self.data_stack, axis=0)
-        fft_image = fftshift(fft2(self.image_avg))
+        image_avg = np.average(self.data_stack, axis=0)
+        fft_image = fftshift(fft2(image_avg))
         magnitude_spectrum = np.abs(fft_image)
         normalized_spectrum = np.log1p(magnitude_spectrum)
         peaks = peak_local_max(normalized_spectrum, min_distance=10, threshold_rel=0.1)
@@ -203,28 +203,25 @@ class ImageReconstruction:
         periods = []
         for peak in sorted_peaks[1:5]:
             distance = np.sqrt((peak[0] - center[0]) ** 2 + (peak[1] - center[1]) ** 2)
-            period = (self.image_avg.shape[0] / distance) * self.pixel_size_x
+            period = (image_avg.shape[0] / distance) * self.pixel_size_x
             periods.append(period)
         return periods, normalized_spectrum, sorted_peaks[1:5]
 
+    def subtract_background(self, bg=500):
+        self.data_stack[self.data_stack>=bg] -= bg
+        self.data_stack[self.data_stack < bg] = 0
 
 def fit_gaussian_2d(image, bounds=None):
     def gaussian_beam(r, bg, I0, r0, w0):
-        # Gaussian function in 1D for fitting the beam profile
         return bg + I0 * np.exp(-2 * ((r - r0) / w0) ** 2)
 
-    # Get the dimensions of the image
     y_px, x_px = image.shape
-
-    # Generate the coordinates for x and y
     x = np.arange(x_px)
     y = np.arange(y_px)
 
-    # Get the maximum intensity values along the x and y axes
     x_max = np.max(image, axis=0)
     y_max = np.max(image, axis=1)
 
-    # Set bounds if none are provided
     if bounds is None:
         bg_min, bg_max = 0, 10 * np.min(image)  # Background bounds
         I0_min, I0_max = np.min(image), 2 * np.max(image)  # Intensity bounds
@@ -233,22 +230,25 @@ def fit_gaussian_2d(image, bounds=None):
         bounds = ((bg_min, I0_min, mean_min, w0_min),
                   (bg_max, I0_max, mean_max, w0_max))
 
-    # Fit the Gaussian beam to both the x and y axes using curve_fit
     xp = curve_fit(gaussian_beam, x, x_max, bounds=bounds)[0]  # x parameters
     yp = curve_fit(gaussian_beam, y, y_max, bounds=bounds)[0]  # y parameters
-
     return yp, xp
 
 
 if __name__ == "__main__":
+    import matplotlib
     import matplotlib.pyplot as plt
 
+    matplotlib.use('Qt5Agg')
+    plt.ion()
+
     r = ImageReconstruction()
-    r.load_data(r"C:\Users\ruizhe.lin\Desktop\20241128151717_dot_scanning-1.tif")
+    r.load_data(r"C:\Users\ruizhe.lin\Desktop\resolft_ao_data\20241128162814_dot_scanning_wao_crop.tif")
     r.pixel_size_x = 0.081
     r.pixel_size_y = 0.081
     r.generate_coordinates()
     r.set_scanning_parameters(step_nums=(30, 30), step_sizes=(0.028, 0.028))
+    r.subtract_background(bg=430)
     data_avg = np.average(r.data_stack, axis=0)
     r.set_focal_parameters(periods=(0.85, 0.85), ranges=((0.4, r.nx * r.pixel_size_x), (-0.2, r.ny * r.pixel_size_y)))
     arr = r.generate_center_array()
@@ -258,4 +258,4 @@ if __name__ == "__main__":
     plt.savefig(r'C:\Users\ruizhe.lin\Desktop\alignment.png', dpi=600)
     sub = r.process_sub_stacks(r.data_stack)
     result = r.tile_sub_stacks(sub)
-    tf.imwrite(r'C:\Users\ruizhe.lin\Desktop\result_image.tif', result)
+    tf.imwrite(r'C:\Users\ruizhe.lin\Desktop\resolft_ao_data\20241128162814_dot_scanning_wao_crop_result_image.tif', result)
