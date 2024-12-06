@@ -22,6 +22,7 @@ class LSS:
         self.xv, self.yv = None, None
         self.rho = None
         self.bpp = None
+        self.dsk = None
         self.msk = None
         self.stack = None
 
@@ -43,38 +44,37 @@ class LSS:
         self.xv, self.yv = np.meshgrid(x, x)
         self.rho = np.sqrt(self.xv ** 2 + self.yv ** 2)
 
-    def flat_pupil(self, origin=(0, 0), verbose=False):
-        self.msk = self.disc_array(self.radius, origin=origin)
-        self.bpp = self.msk * np.exp(2j * np.pi * np.zeros((self.nx, self.nx)))
+    def flat_pupil(self, verbose=False):
+        self.dsk = self.disc_array(radius=self.radius, origin=(0, 0))
+        self.msk = np.zeros(self.dsk.shape)
+        self.bpp = self.dsk * np.exp(2j * np.pi * self.dsk * np.zeros((self.nx, self.nx)))
         if verbose:
             plt.figure()
             plt.imshow(np.abs(self.bpp))
             plt.show()
 
     def round_masks(self, rds, origins, verbose=False):
-        s = np.zeros(self.msk.shape)
+        s = np.zeros(self.dsk.shape)
         for r, o in zip(rds, origins):
-            m = self.disc_array(r, origin=o)
+            m = self.disc_array(r, origin=o) * self.dsk
             s = np.logical_or(s != 0, m != 0).astype(int)
-        self.msk *= s
-        self.bpp *= self.msk
+        self.msk = np.logical_or(s != 0, self.msk != 0).astype(int)
         if verbose:
             plt.figure()
-            plt.imshow(np.abs(self.bpp))
+            plt.imshow(self.msk)
             plt.show()
 
     def square_masks(self, mask_sizes, origins, verbose=False):
-        s = np.zeros(self.msk.shape)
+        s = np.zeros(self.dsk.shape)
         for sz, og in zip(mask_sizes, origins):
             y_origin, x_origin = og
             mask_height, mask_width = sz
-            m = (np.abs(self.xv - x_origin) <= mask_width) * (np.abs(self.yv - y_origin) <= mask_height)
+            m = (np.abs(self.xv - x_origin) <= mask_width) * (np.abs(self.yv - y_origin) <= mask_height) * self.dsk
             s = np.logical_or(s != 0, m != 0).astype(int)
-        self.msk *= s
-        self.bpp *= self.msk
+        self.msk = np.logical_or(s != 0, self.msk != 0).astype(int)
         if verbose:
             plt.figure()
-            plt.imshow(np.abs(self.bpp))
+            plt.imshow(self.msk)
             plt.show()
 
     def add_half(self, orient="x", verbose=False):
@@ -165,13 +165,13 @@ class LSS:
         self.stack = np.zeros((n_steps - 1, self.nx, self.nx))
         for m, z in enumerate(zarr):
             ph = self.focus_mode(z * step)
-            wf = self.bpp * np.exp(2j * np.pi * ph)
+            wf = self.msk * self.bpp * np.exp(2j * np.pi * self.msk * ph)
             if coh:
                 self.stack[m] = fft2(wf)
             else:
                 self.stack[m] = np.abs(fft2(wf)) ** 2
 
-    def disc_array(self, radius=32.0, origin=(0, 0), dtype=np.float64):
+    def disc_array(self, radius=32.0, origin=(0, 0), dtype=int):
         y_origin, x_origin = origin
         rh = np.sqrt((self.xv - x_origin) ** 2 + (self.yv - y_origin) ** 2)
         disc = (rh < radius).astype(dtype)
@@ -186,5 +186,7 @@ if __name__ == '__main__':
     p = LSS()
     p.mesh_grid()
     p.flat_pupil()
+    p.square_masks(mask_sizes=[(2, 10), (2, 10)], origins=[(0, -20), (0, 20)], verbose=True)
+    p.round_masks([1, 1], [(20, 0), (-20, 0)], verbose=True)
     p.get_3d_psf(-2, 2, 0.02)
     p.save_result(r"C:\Users\ruizhe.lin\Documents\Data")
