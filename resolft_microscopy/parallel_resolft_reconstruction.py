@@ -1,7 +1,7 @@
 import numpy as np
 import tifffile as tf
 from numpy.fft import fft2, fftshift
-from scipy.optimize import curve_fit
+from scipy.signal import find_peaks
 from skimage.feature import peak_local_max
 
 
@@ -43,32 +43,16 @@ class ImageReconstruction:
     def set_focal_parameters(self, periods=(0.83, 0.83), ranges=((20., 40.), (20., 40.))):
         self.period_x_um, self.period_y_um = periods  # micrometer
         self.range_x_um, self.range_y_um = ranges  # micrometers
-        x_centers = np.arange(self.range_x_um[0] + self.period_x_um, self.range_x_um[1] - self.period_x_um,
+        self.x_centers = np.arange(self.range_x_um[0] + self.period_x_um, self.range_x_um[1] - self.period_x_um,
                               self.period_x_um)
-        y_centers = np.arange(self.range_y_um[0] + self.period_y_um, self.range_y_um[1] - self.period_y_um,
+        self.y_centers = np.arange(self.range_y_um[0] + self.period_y_um, self.range_y_um[1] - self.period_y_um,
                               self.period_y_um)
-        self.nxc = x_centers.shape[0]
-        self.nyc = y_centers.shape[0]
-        x_grid, y_grid = np.meshgrid(x_centers, y_centers)
-        self.center_list = np.column_stack([y_grid.ravel(), x_grid.ravel()]).tolist()
-
-    def correct_center_array(self):
-        for i, (y_center, x_center) in enumerate(self.center_list):
-            x_start = max(0, x_center - self.period_x_um / 2)
-            y_start = max(0, y_center - self.period_y_um / 2)
-            x_end = min(self.nx * self.pixel_size_x, x_start + self.period_x_um)
-            y_end = min(self.ny * self.pixel_size_y, y_start + self.period_y_um)
-            x_start = int(x_start / self.pixel_size_x)
-            y_start = int(y_start / self.pixel_size_y)
-            x_end = int(x_end / self.pixel_size_x)
-            y_end = int(y_end / self.pixel_size_y)
-            sub_img = self.image_avg[y_start:y_end, x_start:x_end]
-            yp, xp = fit_gaussian_2d(sub_img)
-            x_center = (x_start + xp[2]) * self.pixel_size_x
-            y_center = (y_start + yp[2]) * self.pixel_size_y
-            self.center_list[i] = [y_center, x_center]
 
     def generate_center_array(self):
+        self.nxc = self.x_centers.shape[0]
+        self.nyc = self.y_centers.shape[0]
+        x_grid, y_grid = np.meshgrid(self.x_centers, self.y_centers)
+        self.center_list = np.column_stack([y_grid.ravel(), x_grid.ravel()]).tolist()
         center_array = np.zeros_like(self.xv)
         for i, (yc, xc) in enumerate(self.center_list):
             x_idx = (np.abs(self.xv[0, :] - xc)).argmin()
@@ -211,28 +195,17 @@ class ImageReconstruction:
         self.data_stack[self.data_stack>=bg] -= bg
         self.data_stack[self.data_stack < bg] = 0
 
-def fit_gaussian_2d(image, bounds=None):
-    def gaussian_beam(r, bg, I0, r0, w0):
-        return bg + I0 * np.exp(-2 * ((r - r0) / w0) ** 2)
-
-    y_px, x_px = image.shape
-    x = np.arange(x_px)
-    y = np.arange(y_px)
-
-    x_max = np.max(image, axis=0)
-    y_max = np.max(image, axis=1)
-
-    if bounds is None:
-        bg_min, bg_max = 0, 10 * np.min(image)  # Background bounds
-        I0_min, I0_max = np.min(image), 2 * np.max(image)  # Intensity bounds
-        mean_min, mean_max = 0, max(x_px, y_px)  # Mean (center) bounds
-        w0_min, w0_max = 0, max(x_px, y_px)  # Width (beam size) bounds
-        bounds = ((bg_min, I0_min, mean_min, w0_min),
-                  (bg_max, I0_max, mean_max, w0_max))
-
-    xp = curve_fit(gaussian_beam, x, x_max, bounds=bounds)[0]  # x parameters
-    yp = curve_fit(gaussian_beam, y, y_max, bounds=bounds)[0]  # y parameters
-    return yp, xp
+    @staticmethod
+    def find_closest_peak(pks, peaks, period):
+        updated_pks = []
+        for pk in pks:
+            closest_idx = np.abs(peaks - pk).argmin()
+            closest_peak = peaks[closest_idx]
+            if abs(closest_peak - pk) <= period:
+                updated_pks.append(closest_peak)
+            else:
+                updated_pks.append(pk)
+        return np.array(updated_pks)
 
 
 if __name__ == "__main__":
@@ -243,19 +216,48 @@ if __name__ == "__main__":
     plt.ion()
 
     r = ImageReconstruction()
-    r.load_data(r"C:\Users\ruizhe.lin\Desktop\resolft_ao_data\20241128162814_dot_scanning_wao_crop.tif")
+    r.load_data(r"C:\Users\ruizhe.lin\Desktop\resolft_ao_data\20241128151717_dot_scanning_wao_crop.tif")
     r.pixel_size_x = 0.081
     r.pixel_size_y = 0.081
     r.generate_coordinates()
     r.set_scanning_parameters(step_nums=(30, 30), step_sizes=(0.028, 0.028))
-    r.subtract_background(bg=430)
+    r.subtract_background(bg=400)
+
     data_avg = np.average(r.data_stack, axis=0)
-    r.set_focal_parameters(periods=(0.85, 0.85), ranges=((0.4, r.nx * r.pixel_size_x), (-0.2, r.ny * r.pixel_size_y)))
+    data_avg_x = np.sum(data_avg, axis=0)
+    data_avg_y = np.sum(data_avg, axis=1)
+    peak_x, _ = find_peaks(data_avg_x)
+    peak_y, _ = find_peaks(data_avg_y)
+
+    r.set_focal_parameters(periods=(0.85, 0.85), ranges=((0.3, r.nx * r.pixel_size_x), (-0.2, r.ny * r.pixel_size_y)))
     arr = r.generate_center_array()
+    arr_x = np.sum(arr, axis=0)
+    arr_y = np.sum(arr, axis=1)
+
+    pk_x = r.x_centers / r.pixel_size_x
+    updated_pk_x = r.find_closest_peak(pk_x, peak_x, r.period_x_um / r.pixel_size_x)
+    pk_y = r.y_centers / r.pixel_size_y
+    updated_pk_y = r.find_closest_peak(pk_y, peak_y, r.period_y_um / r.pixel_size_y)
+    r.x_centers = updated_pk_x * r.pixel_size_x
+    r.y_centers = updated_pk_y * r.pixel_size_y
+    arr = r.generate_center_array()
+    arr_x = np.sum(arr, axis=0)
+    arr_y = np.sum(arr, axis=1)
+    plt.figure()
+    plt.plot(data_avg_x, label="Data")
+    plt.plot(arr_x * data_avg_x.max() / r.nxc, label="Center")
+    plt.plot(peak_x, data_avg_x[peak_x], "x", label="Peaks")
+    plt.show()
+    plt.figure()
+    plt.plot(data_avg_y, label="Data")
+    plt.plot(arr_y * data_avg_y.max() / r.nyc, label="Center")
+    plt.plot(peak_y, data_avg_y[peak_y], "x", label="Peaks")
+    plt.show()
+
     plt.figure()
     plt.imshow(arr, cmap='viridis', interpolation='none')
     plt.imshow(data_avg, cmap='plasma', interpolation='none', alpha=0.7)
     plt.savefig(r'C:\Users\ruizhe.lin\Desktop\alignment.png', dpi=600)
     sub = r.process_sub_stacks(r.data_stack)
     result = r.tile_sub_stacks(sub)
-    tf.imwrite(r'C:\Users\ruizhe.lin\Desktop\resolft_ao_data\20241128162814_dot_scanning_wao_crop_result_image.tif', result)
+    tf.imwrite(r'C:\Users\ruizhe.lin\Desktop\resolft_ao_data\20241128151717_dot_scanning_wao_crop_nm_result_image.tif', result)
