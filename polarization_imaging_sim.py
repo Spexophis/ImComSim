@@ -231,6 +231,7 @@ class POLAR:
 class RECON(POLAR):
     def __init__(self):
         super().__init__()
+        self.data = None
         self.img_0 = None
         self.img_45 = None
         self.img_90 = None
@@ -239,17 +240,19 @@ class RECON(POLAR):
 
     def load_data(self, fd=None):
         if fd is not None:
-            self.out = tf.imread(fd)
+            self.data = tf.imread(fd)
+        else:
+            self.data = self.out
 
     def sub_bg(self, bg):
-        self.out[self.out > bg] = self.out[self.out>bg] - bg
-        self.out[self.out <= bg] = 0
+        self.data[self.data > bg] = self.data[self.data > bg] - bg
+        self.data[self.data <= bg] = 0
 
     def split_channels(self):
-        self.img_0 = self._interp(p.out[1::2, 1::2], 2)
-        self.img_45 = self._interp(p.out[::2, 1::2], 2)
-        self.img_90 = self._interp(p.out[::2, ::2], 2)
-        self.img_135 = self._interp(p.out[1::2, ::2], 2)
+        self.img_0 = self._interp(p.data[1::2, 1::2], 2)
+        self.img_45 = self._interp(p.data[::2, 1::2], 2)
+        self.img_90 = self._interp(p.data[::2, ::2], 2)
+        self.img_135 = self._interp(p.data[1::2, ::2], 2)
 
     def compute_anisotropy(self):
         horizontal = self.img_0
