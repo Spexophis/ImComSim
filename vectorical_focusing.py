@@ -46,13 +46,19 @@ class VectFoc:
         self.efd_focus_x = np.zeros(xyz, dtype=np.complex128)
         self.efd_focus_y = np.zeros(xyz, dtype=np.complex128)
 
-    def pupil_amplitude(self, rho, phi):
-        return 1.0
+    def pupil_amplitude(self, rho, phi, mod="uniform"):
+        if mod == "uniform":
+            return 1.0
 
-    def pupil_phase(self, rho, phi):
-        return zernike_phase(rho, phi, self.zernike_terms)
+    def pupil_phase(self, rho, phi, mod="flat"):
+        if mod == "flat":
+            return 0.0
+        if mod == "half":
+            return self.half_moon(phi)
+        if mod == "zernike":
+            return zernike_phase(rho, phi, self.zernike_terms)
 
-    def half_moon(self, rho, phi):
+    def half_moon(self, phi):
         if phi < np.pi:
             return 0.0
         else:
