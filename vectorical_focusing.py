@@ -2,6 +2,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy
+import tifffile as tf
 
 matplotlib.use('Qt5Agg')
 plt.ion()
@@ -38,7 +39,8 @@ class VectFoc:
         self.d_theta = (self.theta[1] - self.theta[0]) / (n_theta - 1)
         self.d_phi = (self.phi[1] - self.phi[0]) / (n_phi - 1)
 
-    def map_focal_space(self, xr=(-1.024e-6, 1.024e-6), yr=(-1.024e-6, 1.024e-6), zr=(-0.512e-6, 0.512e-6), xyz=(16, 192, 192)):
+    def map_focal_space(self, xr=(-1.024e-6, 1.024e-6), yr=(-1.024e-6, 1.024e-6), zr=(-0.512e-6, 0.512e-6),
+                        xyz=(16, 192, 192)):
         self.x_r = np.linspace(xr[0], xr[1], xyz[1])
         self.y_r = np.linspace(yr[0], yr[1], xyz[2])
         self.z_r = np.linspace(zr[0], zr[1], xyz[0])
@@ -50,7 +52,24 @@ class VectFoc:
         if mod == "uniform":
             return 1.0
         if mod == "gaussian":
+            return self.gaussian(rho)
+
+    @staticmethod
+    def gaussian(rho, sigma=0.3):
+        return np.exp(- (rho ** 2) / (2 * sigma ** 2))
+
+    @staticmethod
+    def double_iris(rho, phi, center=0.5, radius=0.4):
+        x = rho * np.cos(phi)
+        y = rho * np.sin(phi)
+        x1, y1 = -center, 0.0
+        x2, y2 = +center, 0.0
+        d1 = (x - x1) ** 2 + (y - y1) ** 2
+        d2 = (x - x2) ** 2 + (y - y2) ** 2
+        if (d1 < radius ** 2) or (d2 < radius ** 2):
             return 1.0
+        else:
+            return 0.0
 
     def pupil_phase(self, rho, phi, mod="flat"):
         if mod == "flat":
@@ -60,7 +79,8 @@ class VectFoc:
         if mod == "zernike":
             return zernike_phase(rho, phi, self.zernike_terms)
 
-    def half_moon(self, phi):
+    @staticmethod
+    def half_moon(phi):
         if phi < np.pi:
             return 0.0
         else:
@@ -283,7 +303,7 @@ class VectFoc:
         int_focus = np.abs(self.efd_focus_x) ** 2 + np.abs(self.efd_focus_y) ** 2
         return int_focus
 
-    def compute_focal_volume_lr_pol(self):
+    def compute_focal_volume_lr_pol(self, amp_mod="uniform", phs_mod="half"):
         pre_factor = (1j * self.k * np.exp(1j * self.k * self.f)) / (2.0 * np.pi * self.f)
 
         for iz, z_ in enumerate(self.z_r):
@@ -300,8 +320,8 @@ class VectFoc:
                     rho = 0.0
 
                 for ip, phi_ in enumerate(self.phi):
-                    amp = self.pupil_amplitude(rho, phi_)
-                    pha = self.pupil_phase(rho, phi_)
+                    amp = self.pupil_amplitude(rho, phi_, mod=amp_mod)
+                    pha = self.pupil_phase(rho, phi_, mod=phs_mod)
 
                     # x-polarized across pupil => (Epx, Epy) = (amp*exp(i*pha), 0)
                     epx = amp * np.exp(1j * pha)
@@ -320,7 +340,8 @@ class VectFoc:
                     ey_polar = (e_theta * np.sin(phi_) * cos_t + e_phi * np.cos(phi_))
 
                     # Phase factor for (x,y,z_) location: exp[-i*k ( x*sin_t*cos(phi_) + y*sin_t*sin(phi_) + z_*cos_t )]
-                    phase_factor = np.exp(-1j * self.k * (self.x_v * sin_t * np.cos(phi_) + self.y_v * sin_t * np.sin(phi_) + z_ * cos_t))
+                    phase_factor = np.exp(
+                        -1j * self.k * (self.x_v * sin_t * np.cos(phi_) + self.y_v * sin_t * np.sin(phi_) + z_ * cos_t))
 
                     # Contribution to field
                     d_ex = ex_polar * phase_factor * sin_t
@@ -339,6 +360,155 @@ class VectFoc:
 
         int_focus = np.abs(self.efd_focus_x) ** 2 + np.abs(self.efd_focus_y) ** 2
         return int_focus
+
+    def compute_focal_volume_circ_pol(self, amp_mod="uniform", phs_mod="half"):
+        pre_factor = (1j * self.k * np.exp(1j * self.k * self.f)) / (2.0 * np.pi * self.f)
+
+        for iz, z_ in enumerate(self.z_r):
+            ex_plane = np.zeros(self.x_v.shape, dtype=np.complex128)
+            ey_plane = np.zeros(self.x_v.shape, dtype=np.complex128)
+
+            for it, theta in enumerate(self.theta):
+                sin_t = np.sin(theta)
+                cos_t = np.cos(theta)
+
+                if self.alpha_max != 0:
+                    rho = sin_t / np.sin(self.alpha_max)
+                else:
+                    rho = 0.0
+
+                for ip, phi_ in enumerate(self.phi):
+                    amp = self.pupil_amplitude(rho, phi_, mod=amp_mod)
+                    pha = self.pupil_phase(rho, phi_, mod=phs_mod)
+                    common = amp * np.exp(1j * pha)
+
+                    # For LEFT-HANDED circular in the pupil:
+                    #   E0x = 1/sqrt(2)*common
+                    #   E0y = (i / sqrt(2))*common
+                    # You can swap the sign of 'i' for right-handed if needed.
+                    e0x = (1.0 / np.sqrt(2)) * common
+                    e0y = (-1j / np.sqrt(2)) * common
+
+                    #  X-polarization portion
+                    #    Etheta_x = E0x cos(phi_)
+                    #    Ephi_x   = - E0x sin(phi_)
+                    e_theta_x = e0x * np.cos(phi_)
+                    e_phi_x = -e0x * np.sin(phi_)
+
+                    ex_x = (e_theta_x * np.cos(phi_) * cos_t - e_phi_x * np.sin(phi_))
+                    ey_x = (e_theta_x * np.sin(phi_) * cos_t + e_phi_x * np.cos(phi_))
+
+                    #  Y-polarization portion
+                    #    Etheta_y = E0y sin(phi_)
+                    #    Ephi_y   = E0y cos(phi_)
+                    e_theta_y = e0y * np.sin(phi_)
+                    e_phi_y = e0y * np.cos(phi_)
+
+                    ex_y = (e_theta_y * np.cos(phi_) * cos_t - e_phi_y * np.sin(phi_))
+                    ey_y = (e_theta_y * np.sin(phi_) * cos_t + e_phi_y * np.cos(phi_))
+
+                    # Total Ex, Ey from both x- and y-polarization
+                    ex_polar = ex_x + ex_y
+                    ey_polar = ey_x + ey_y
+
+                    # Phase factor for (x,y,z_) location: exp[-i*k ( x*sin_t*cos(phi_) + y*sin_t*sin(phi_) + z_*cos_t )]
+                    phase_factor = np.exp(
+                        -1j * self.k * (self.x_v * sin_t * np.cos(phi_) + self.y_v * sin_t * np.sin(phi_) + z_ * cos_t))
+
+                    # The contribution dE to the focal plane from this ring element is
+                    #   dE_x = Ex_polar * phase_factor * sinθ dθ dφ
+                    #   dE_y = Ey_polar * phase_factor * sinθ dθ dφ
+                    d_ex = ex_polar * phase_factor * sin_t
+                    d_ey = ey_polar * phase_factor * sin_t
+
+                    ex_plane += d_ex
+                    ey_plane += d_ey
+
+            # Multiply by integration measure and prefactor
+            ex_plane *= (pre_factor * self.d_theta * self.d_phi)
+            ey_plane *= (pre_factor * self.d_theta * self.d_phi)
+
+            # Store in our 3D arrays
+            self.efd_focus_x[iz] = ex_plane
+            self.efd_focus_y[iz] = ey_plane
+
+        int_focus = np.abs(self.efd_focus_x) ** 2 + np.abs(self.efd_focus_y) ** 2
+        return int_focus
+
+    def compute_focal_volume_radi_pol(self, amp_mod="uniform", phs_mod="half"):
+        pre_factor = (1j * self.k * np.exp(1j * self.k * self.f)) / (2.0 * np.pi * self.f)
+
+        for iz, z_ in enumerate(self.z_r):
+            ex_plane = np.zeros(self.x_v.shape, dtype=np.complex128)
+            ey_plane = np.zeros(self.x_v.shape, dtype=np.complex128)
+
+            for it, theta in enumerate(self.theta):
+                sin_t = np.sin(theta)
+                cos_t = np.cos(theta)
+
+                if self.alpha_max != 0:
+                    rho = sin_t / np.sin(self.alpha_max)
+                else:
+                    rho = 0.0
+
+                for ip, phi_ in enumerate(self.phi):
+                    amp = self.pupil_amplitude(rho, phi_, mod=amp_mod)
+                    pha = self.pupil_phase(rho, phi_, mod=phs_mod)
+                    common = amp * np.exp(1j * pha)
+
+                    # ----- Radial polarization in the pupil plane -----
+                    # E0x = amp*cos(phi_),  E0y = amp*sin(phi_)
+                    # plus overall phase factor exp(i * pha)
+                    # so net is (E0x, E0y) = amp*exp(i*pha)*(cos(phi_), sin(phi_))
+                    e0x = common * np.cos(phi_)
+                    e0y = common * np.sin(phi_)
+
+                    # Now do the standard Richards-Wolf approach
+                    # The local field can be decomposed into spherical basis (theta-hat, phi-hat).
+                    #
+                    #   For x-polarized only:
+                    #       Eθ = E0x*cos(phi_),   Eφ = -E0x*sin(phi_)
+                    #   For y-polarized only:
+                    #       Eθ = E0y*sin(phi_),   Eφ =  E0y*cos(phi_)
+                    #
+                    # For general (E0x, E0y):
+                    #   Eθ = E0x*cos(phi_) + E0y*sin(phi_)
+                    #   Eφ = -E0x*sin(phi_) + E0y*cos(phi_)
+
+                    e_theta = e0x * np.cos(phi_) + e0y * np.sin(phi_)
+                    e_phi = -e0x * np.sin(phi_) + e0y * np.cos(phi_)
+
+                    # Convert (Etheta, Ephi) back to Cartesian in the focal plane:
+                    #
+                    #   Ex = Eθ * cos(phi_) * cos_t - Eφ * sin(phi_)
+                    #   Ey = Eθ * sin(phi_) * cos_t + Eφ * cos(phi_)
+                    ex_polar = e_theta * np.cos(phi_) * cos_t - e_phi * np.sin(phi_)
+                    ey_polar = e_theta * np.sin(phi_) * cos_t + e_phi * np.cos(phi_)
+
+                    # Phase factor for (x,y,z_) location: exp[-i*k ( x*sin_t*cos(phi_) + y*sin_t*sin(phi_) + z_*cos_t )]
+                    phase_factor = np.exp(
+                        -1j * self.k * (self.x_v * sin_t * np.cos(phi_) + self.y_v * sin_t * np.sin(phi_) + z_ * cos_t))
+
+                    # The contribution dE to the focal plane from this ring element is
+                    #   dE_x = Ex_polar * phase_factor * sinθ dθ dφ
+                    #   dE_y = Ey_polar * phase_factor * sinθ dθ dφ
+                    d_ex = ex_polar * phase_factor * sin_t
+                    d_ey = ey_polar * phase_factor * sin_t
+
+                    ex_plane += d_ex
+                    ey_plane += d_ey
+
+            # Multiply by integration measure and prefactor
+            ex_plane *= (pre_factor * self.d_theta * self.d_phi)
+            ey_plane *= (pre_factor * self.d_theta * self.d_phi)
+
+            # Store in our 3D arrays
+            self.efd_focus_x[iz] = ex_plane
+            self.efd_focus_y[iz] = ey_plane
+
+        int_focus = np.abs(self.efd_focus_x) ** 2 + np.abs(self.efd_focus_y) ** 2
+        return int_focus
+
 
 #############################
 # Zernike polynomials
@@ -377,8 +547,14 @@ if __name__ == "__main__":
     vf.map_pupil_angular(n_theta=128, n_phi=384)
     vf.map_focal_space(xr=(-1.024e-6, 1.024e-6), yr=(-1.024e-6, 1.024e-6), zr=(-0.512e-6, 0.512e-6), xyz=(17, 128, 128))
 
-    ifc = vf.compute_focal_field_lr_pol()
+    ifc = vf.compute_focal_volume_lr_pol(amp_mod="uniform", phs_mod="half")
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_halfmoon.tiff", ifc)
 
+    ifc = vf.compute_focal_volume_circ_pol(amp_mod="uniform", phs_mod="half")
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_circ_pol_halfmoon.tiff", ifc)
+
+    # ifc = vf.compute_focal_volume_radi_pol()
+    # tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_radi_pol.tiff", ifc)
 
     # fig, axs = plt.subplots(2, 2, figsize=(12, 10))
     #
