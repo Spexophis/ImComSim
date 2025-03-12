@@ -49,6 +49,8 @@ class VectFoc:
     def pupil_amplitude(self, rho, phi, mod="uniform"):
         if mod == "uniform":
             return 1.0
+        if mod == "gaussian":
+            return 1.0
 
     def pupil_phase(self, rho, phi, mod="flat"):
         if mod == "flat":
