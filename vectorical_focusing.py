@@ -86,9 +86,6 @@ class VectFoc:
         else:
             return np.pi
 
-    def pupil_aberration(self, rho, phi):
-        return zernike_phase(rho, phi, self.zernike_terms)
-
     def compute_focal_field_lr_pol(self):
         for it, theta in enumerate(self.theta):
             sin_t = np.sin(theta)
@@ -547,14 +544,20 @@ if __name__ == "__main__":
     vf.map_pupil_angular(n_theta=128, n_phi=384)
     vf.map_focal_space(xr=(-1.024e-6, 1.024e-6), yr=(-1.024e-6, 1.024e-6), zr=(-0.512e-6, 0.512e-6), xyz=(17, 128, 128))
 
+    ifc = vf.compute_focal_volume_lr_pol(amp_mod="uniform", phs_mod="flat")
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_flat.tiff", ifc)
+
+    ifc = vf.compute_focal_volume_circ_pol(amp_mod="uniform", phs_mod="flat")
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_circ_pol_flat.tiff", ifc)
+
+    ifc = vf.compute_focal_volume_radi_pol(amp_mod="uniform", phs_mod="flat")
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_radi_pol_flat.tiff", ifc)
+
     ifc = vf.compute_focal_volume_lr_pol(amp_mod="uniform", phs_mod="half")
-    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_halfmoon.tiff", ifc)
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_bisect.tiff", ifc)
 
     ifc = vf.compute_focal_volume_circ_pol(amp_mod="uniform", phs_mod="half")
-    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_circ_pol_halfmoon.tiff", ifc)
-
-    # ifc = vf.compute_focal_volume_radi_pol()
-    # tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_radi_pol.tiff", ifc)
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_circ_pol_bisect.tiff", ifc)
 
     # fig, axs = plt.subplots(2, 2, figsize=(12, 10))
     #
