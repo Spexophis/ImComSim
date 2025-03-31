@@ -112,8 +112,8 @@ class POLAR:
             t = np.linspace(-1, 1, number_of_fluo_per_polynomial[i])
             x = poly_x(t)
             y = poly_y(t)
-            x = self._normalize(x, (x_start[i], x_end[i]))
-            y = self._normalize(y, (y_start[i], y_end[i]))
+            x = self.normalize(x, (x_start[i], x_end[i]))
+            y = self.normalize(y, (y_start[i], y_end[i]))
             cords_x = np.concatenate((cords_x, x))
             cords_y = np.concatenate((cords_y, y))
             poly_dx = poly_x.deriv()
@@ -194,11 +194,11 @@ class POLAR:
     def get_one_img_2d(self, idx):
         for i in range(self.sampling):
             rta = i * self.d_r[idx] / self.sampling
-            rdx, rdy = self._rotate_vector(self.d_x[idx], self.d_y[idx], rta)
-            pix_map = self._vector_to_pixel_map(rdx, rdy)
+            rdx, rdy = self.rotate_vector(self.d_x[idx], self.d_y[idx], rta)
+            pix_map = self.vector_to_pixel_map(rdx, rdy)
             pol_msk = np.tile(pix_map, (self.nxh, self.nyh))
             if self.i_x is not None or self.i_y is not None:
-                swo = 0.5 * self._vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
+                swo = 0.5 * self.vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
                 prb = self.on_probability(pw=swo, expo=1.0)
                 if prb:
                     pol_cam = pol_msk * self.get_2d_psf(self.xps[idx], self.yps[idx], self.illu)
@@ -220,11 +220,11 @@ class POLAR:
         nz = self.nzh * 2
         for i in range(self.sampling):
             rta = i * self.d_r[idx] / self.sampling
-            rdx, rdy = self._rotate_vector(self.d_x[idx], self.d_y[idx], rta)
-            pix_map = self._vector_to_pixel_map(rdx, rdy)
+            rdx, rdy = self.rotate_vector(self.d_x[idx], self.d_y[idx], rta)
+            pix_map = self.vector_to_pixel_map(rdx, rdy)
             pol_msk = np.tile(pix_map, (self.nxh, self.nyh))
             if self.i_x is not None or self.i_y is not None:
-                exc = self.illu * self._vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
+                exc = self.illu * self.vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
             else:
                 exc = self.illu
             temp = np.zeros((nz, nx, nx))
@@ -248,7 +248,7 @@ class POLAR:
         return disc
 
     @staticmethod
-    def _normalize(coord, range_):
+    def normalize(coord, range_):
         r = np.max(coord) - np.min(coord)
         if r == 0:
             return np.full(coord.shape, (range_[1] + range_[0]) / 2)
@@ -257,7 +257,7 @@ class POLAR:
                 range_)
 
     @staticmethod
-    def _rotate_vector(xv, yv, theta_rad):
+    def rotate_vector(xv, yv, theta_rad):
         cos_theta = np.cos(theta_rad)
         sin_theta = np.sin(theta_rad)
         x_rot = xv * cos_theta - yv * sin_theta
@@ -265,7 +265,7 @@ class POLAR:
         return x_rot, y_rot
 
     @staticmethod
-    def _vector_projection(ix, iy, xx, yy):
+    def vector_projection(ix, iy, xx, yy):
         v = np.array([ix, iy])
         d = np.array([xx, yy])
         if not np.isclose(np.linalg.norm(v), 1.0) or not np.isclose(np.linalg.norm(d), 1.0):
@@ -275,7 +275,7 @@ class POLAR:
         return projection
 
     @staticmethod
-    def _vector_to_pixel_map(_dx, _dy):
+    def vector_to_pixel_map(_dx, _dy):
         unit_vector = np.array([_dx, _dy])
         rotated_vector = -unit_vector
         directions = {
@@ -332,7 +332,7 @@ class RECON(POLAR):
 
     def save_results(self, fd=None, verbose=False):
         if verbose:
-            sizes = 4 + 80 * p.sz / p.sz.max()
+            sizes = 4 + 80 * self.sz / self.sz.max()
             plt.figure(figsize=(10, 10))
             plt.scatter(self.xps, self.yps, s=sizes, label="Points")
             plt.quiver(self.xps, self.yps, self.d_x, self.d_y, angles="xy", scale_units="xy", scale=1,
@@ -369,16 +369,16 @@ if __name__ == '__main__':
     p = RECON()
     p.get_objects(number_of_polynomials=8)
     p.flat_pupil()
-    p.get_illumination(intensity=200)
+    p.get_illumination(intensity=100)
     p.generate_data_2d()
     p.load_data()
     p.sub_bg(80)
     p.split_channels()
     p.compute_anisotropy()
-    p.save_results(r"C:\Users\ruizhe.lin\Desktop\polcam_an", True)
+    p.save_results(r"C:\Users\Ruiz\Desktop\polcam_an", True)
     p.get_illumination(intensity=20, pol=45)
     p.generate_data_2d()
     p.sub_bg(80)
     p.split_channels()
     p.compute_anisotropy()
-    p.save_results(r"C:\Users\ruizhe.lin\Desktop\polcam_an", True)
+    p.save_results(r"C:\Users\Ruiz\Desktop\polcam_an", True)
