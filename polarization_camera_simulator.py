@@ -198,11 +198,14 @@ class POLAR:
             pix_map = self._vector_to_pixel_map(rdx, rdy)
             pol_msk = np.tile(pix_map, (self.nxh, self.nyh))
             if self.i_x is not None or self.i_y is not None:
-                exc = self.illu * self._vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
+                swo = 0.5 * self._vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
+                prb = self.on_probability(pw=swo, expo=1.0)
+                if prb:
+                    pol_cam = pol_msk * self.get_2d_psf(self.xps[idx], self.yps[idx], self.illu)
+                    self.out += pol_cam
             else:
-                exc = self.illu
-            pol_cam = pol_msk * self.get_2d_psf(self.xps[idx], self.yps[idx], exc)
-            self.out += pol_cam
+                pol_cam = pol_msk * self.get_2d_psf(self.xps[idx], self.yps[idx], self.illu)
+                self.out += pol_cam
         return idx, 'done'
 
     def generate_data_2d(self):
