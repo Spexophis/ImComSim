@@ -5,6 +5,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import tifffile as tf
+import photophysics_simulator as phs
 
 matplotlib.use('Qt5Agg')
 plt.ion()
@@ -48,6 +49,24 @@ class POLAR:
         self.ita = 0.001  # 1.2 - glycerol at 25 degree temperature
         self.temperature = 298  # K
         self.t = None
+        self.rsEGFP2_on_state = phs.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
+                                                      extincion_coeff_off=[22000, 60],
+                                                      wavelength=[405, 488],
+                                                      lifetime_on=1.6E-6,
+                                                      lifetime_off=20E-9,
+                                                      qy_cis_to_trans_anionic=1.65E-2,
+                                                      qy_trans_to_cis_neutral=0.33,
+                                                      qy_fluorescence_on=0.35,
+                                                      initial_populations=[0, 0, 1, 0])
+        self.rsEGFP2_off_state = phs.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
+                                                       extincion_coeff_off=[22000, 60],
+                                                       wavelength=[405, 488],
+                                                       lifetime_on=1.6E-6,
+                                                       lifetime_off=20E-9,
+                                                       qy_cis_to_trans_anionic=1.65E-2,
+                                                       qy_trans_to_cis_neutral=0.33,
+                                                       qy_fluorescence_on=0.35,
+                                                       initial_populations=[1, 0, 0, 0])
 
     def mesh_grid(self):
         x = np.linspace(-self.nxh, self.nxh - 1, self.nxh * 2)
@@ -146,6 +165,14 @@ class POLAR:
             x, y = point
             counts[x, y] += 1
         return counts
+
+    def on_probability(self, pw=0.5, expo=1.0):
+        on_switching_pulse = phs.ModulatedLasers(wavelengths=[405, 488], power_densities=[pw, 0.0],
+                                                 pulse_widths=[expo, 0.0], t_start=[1, 2.5], dwell_time=30)
+        on_switching_experiment = phs.Experiment(illumination=on_switching_pulse, fluorophore=self.rsEGFP2_off_state)
+        populations = on_switching_experiment.solve_kinetics(0.01)
+        p_on = populations[-1, 2]
+        return 1 if np.random.random() < p_on else 0
 
     def get_2d_psf(self, x, y, n_photons):
         ph_x = self.lateral_mode(pos=(x, y))
