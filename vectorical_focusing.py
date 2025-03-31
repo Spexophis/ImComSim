@@ -48,7 +48,7 @@ class VectFoc:
         self.efd_focus_x = np.zeros(xyz, dtype=np.complex128)
         self.efd_focus_y = np.zeros(xyz, dtype=np.complex128)
 
-    def pupil_amplitude(self, rho, phi, mod="uniform"):
+    def pupil_amplitude(self, rho, phi, mod="uniform", **kwargs):
         if mod == "uniform":
             return 1.0
         if mod == "gaussian":
@@ -71,17 +71,28 @@ class VectFoc:
         else:
             return 0.0
 
-    def pupil_phase(self, rho, phi, mod="flat"):
+    def pupil_phase(self, rho, phi, mod="flat", **kwargs):
         if mod == "flat":
             return 0.0
-        if mod == "half":
-            return self.half_moon(phi)
-        if mod == "zernike":
-            return zernike_phase(rho, phi, self.zernike_terms)
+
+        elif mod == "half":
+            if 'rang' not in kwargs:
+                raise ValueError("Missing required keyword argument: 'rang' for mod='half'.")
+            rang = kwargs['rang']
+            return self.half_moon(phi, rang)
+
+        elif mod == "zernike":
+            if 'amp' not in kwargs:
+                raise ValueError("Missing required keyword argument: 'amp' for mod='zernike'.")
+            amp = kwargs['amp']
+            return zernike_phase(rho, phi, self.zernike_terms, amp)
+
+        else:
+            raise ValueError(f"Unknown mode '{mod}' specified.")
 
     @staticmethod
-    def half_moon(phi):
-        if phi < np.pi:
+    def half_moon(phi, rang=(0.0, 1.0)):
+        if rang[0] * np.pi < phi < rang[1] * np.pi:
             return 0.0
         else:
             return np.pi
@@ -300,7 +311,7 @@ class VectFoc:
         int_focus = np.abs(self.efd_focus_x) ** 2 + np.abs(self.efd_focus_y) ** 2
         return int_focus
 
-    def compute_focal_volume_lr_pol(self, amp_mod="uniform", phs_mod="half"):
+    def compute_focal_volume_lr_pol(self, amp_mod="uniform", phs_mod="half", **kwargs):
         pre_factor = (1j * self.k * np.exp(1j * self.k * self.f)) / (2.0 * np.pi * self.f)
 
         for iz, z_ in enumerate(self.z_r):
@@ -317,8 +328,8 @@ class VectFoc:
                     rho = 0.0
 
                 for ip, phi_ in enumerate(self.phi):
-                    amp = self.pupil_amplitude(rho, phi_, mod=amp_mod)
-                    pha = self.pupil_phase(rho, phi_, mod=phs_mod)
+                    amp = self.pupil_amplitude(rho, phi_, amp_mod, **kwargs)
+                    pha = self.pupil_phase(rho, phi_, phs_mod, **kwargs)
 
                     # x-polarized across pupil => (Epx, Epy) = (amp*exp(i*pha), 0)
                     epx = amp * np.exp(1j * pha)
@@ -358,7 +369,7 @@ class VectFoc:
         int_focus = np.abs(self.efd_focus_x) ** 2 + np.abs(self.efd_focus_y) ** 2
         return int_focus
 
-    def compute_focal_volume_circ_pol(self, amp_mod="uniform", phs_mod="half"):
+    def compute_focal_volume_circ_pol(self, amp_mod="uniform", phs_mod="half", **kwargs):
         pre_factor = (1j * self.k * np.exp(1j * self.k * self.f)) / (2.0 * np.pi * self.f)
 
         for iz, z_ in enumerate(self.z_r):
@@ -375,8 +386,8 @@ class VectFoc:
                     rho = 0.0
 
                 for ip, phi_ in enumerate(self.phi):
-                    amp = self.pupil_amplitude(rho, phi_, mod=amp_mod)
-                    pha = self.pupil_phase(rho, phi_, mod=phs_mod)
+                    amp = self.pupil_amplitude(rho, phi_, amp_mod, **kwargs)
+                    pha = self.pupil_phase(rho, phi_, phs_mod, **kwargs)
                     common = amp * np.exp(1j * pha)
 
                     # For LEFT-HANDED circular in the pupil:
@@ -432,7 +443,7 @@ class VectFoc:
         int_focus = np.abs(self.efd_focus_x) ** 2 + np.abs(self.efd_focus_y) ** 2
         return int_focus
 
-    def compute_focal_volume_radi_pol(self, amp_mod="uniform", phs_mod="half"):
+    def compute_focal_volume_radi_pol(self, amp_mod="uniform", phs_mod="half", **kwargs):
         pre_factor = (1j * self.k * np.exp(1j * self.k * self.f)) / (2.0 * np.pi * self.f)
 
         for iz, z_ in enumerate(self.z_r):
@@ -449,8 +460,8 @@ class VectFoc:
                     rho = 0.0
 
                 for ip, phi_ in enumerate(self.phi):
-                    amp = self.pupil_amplitude(rho, phi_, mod=amp_mod)
-                    pha = self.pupil_phase(rho, phi_, mod=phs_mod)
+                    amp = self.pupil_amplitude(rho, phi_, amp_mod, **kwargs)
+                    pha = self.pupil_phase(rho, phi_, phs_mod, **kwargs)
                     common = amp * np.exp(1j * pha)
 
                     # ----- Radial polarization in the pupil plane -----
@@ -532,11 +543,11 @@ def zernike_2d(n, m, rho, phi):
         return zernike_radial(n, -m, rho) * np.sin(-m * phi)
 
 
-def zernike_phase(rho, phi, zernike_terms):
+def zernike_phase(rho, phi, zernike_terms, amp):
     total = 0.0
     for (n, m, c) in zernike_terms:
         total += c * zernike_2d(n, m, rho, phi)
-    return total
+    return total * amp
 
 
 if __name__ == "__main__":
@@ -544,20 +555,22 @@ if __name__ == "__main__":
     vf.map_pupil_angular(n_theta=128, n_phi=384)
     vf.map_focal_space(xr=(-1.024e-6, 1.024e-6), yr=(-1.024e-6, 1.024e-6), zr=(-0.512e-6, 0.512e-6), xyz=(17, 128, 128))
 
-    ifc = vf.compute_focal_volume_lr_pol(amp_mod="uniform", phs_mod="flat")
-    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_flat.tiff", ifc)
+    # ifc = vf.compute_focal_volume_lr_pol(amp_mod="uniform", phs_mod="flat")
+    # tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_flat.tiff", ifc)
+    #
+    # ifc = vf.compute_focal_volume_circ_pol(amp_mod="uniform", phs_mod="flat")
+    # tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_circ_pol_flat.tiff", ifc)
+    #
+    # ifc = vf.compute_focal_volume_radi_pol(amp_mod="uniform", phs_mod="flat")
+    # tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_radi_pol_flat.tiff", ifc)
 
-    ifc = vf.compute_focal_volume_circ_pol(amp_mod="uniform", phs_mod="flat")
-    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_circ_pol_flat.tiff", ifc)
+    ifc = vf.compute_focal_volume_lr_pol(amp_mod="uniform", phs_mod="half", rang=(0.25, 1.25))
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_bisect_rt25.tif", ifc)
+    ifc = vf.compute_focal_volume_lr_pol(amp_mod="uniform", phs_mod="half", rang=(0.75, 1.75))
+    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_bisect_rt75.tif", ifc)
 
-    ifc = vf.compute_focal_volume_radi_pol(amp_mod="uniform", phs_mod="flat")
-    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_radi_pol_flat.tiff", ifc)
-
-    ifc = vf.compute_focal_volume_lr_pol(amp_mod="uniform", phs_mod="half")
-    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_linear_pol_bisect.tiff", ifc)
-
-    ifc = vf.compute_focal_volume_circ_pol(amp_mod="uniform", phs_mod="half")
-    tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_circ_pol_bisect.tiff", ifc)
+    # ifc = vf.compute_focal_volume_circ_pol(amp_mod="uniform", phs_mod="half")
+    # tf.imwrite(r"C:\Users\Ruiz\Desktop\vectorial_focus_circ_pol_bisect.tiff", ifc)
 
     # fig, axs = plt.subplots(2, 2, figsize=(12, 10))
     #
