@@ -49,6 +49,8 @@ class POLAR:
         self.ita = 0.001  # 1.2 - glycerol at 25 degree temperature
         self.temperature = 298  # K
         self.t = None
+        self.pwr = 0.4
+        self.expo = 0.1
         self.rsEGFP2_on_state = phs.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
                                                       extincion_coeff_off=[22000, 60],
                                                       wavelength=[405, 488],
@@ -192,19 +194,19 @@ class POLAR:
         return np.fft.fftshift(psf_img)
 
     def get_one_img_2d(self, idx):
-        for i in range(self.sampling):
-            rta = i * self.d_r[idx] / self.sampling
-            rdx, rdy = self.rotate_vector(self.d_x[idx], self.d_y[idx], rta)
-            pix_map = self.vector_to_pixel_map(rdx, rdy)
-            pol_msk = np.tile(pix_map, (self.nxh, self.nyh))
-            if self.i_x is not None or self.i_y is not None:
-                swo = 0.5 * self.vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
-                prb = self.on_probability(pw=swo, expo=1.0)
-                if prb:
-                    pol_cam = pol_msk * self.get_2d_psf(self.xps[idx], self.yps[idx], self.illu)
-                    self.out += pol_cam
-            else:
-                pol_cam = pol_msk * self.get_2d_psf(self.xps[idx], self.yps[idx], self.illu)
+        if self.i_x is not None or self.i_y is not None:
+            swo = self.pwr * self.vector_projection(self.i_x, self.i_y, self.d_x[idx], self.d_y[idx])
+            prb = self.on_probability(pw=swo, expo=self.expo)
+        else:
+            prb = 1
+        if prb:
+            for i in range(self.sampling):
+                exc = self.illu / self.sampling
+                rta = i * self.d_r[idx] / self.sampling
+                rdx, rdy = self.rotate_vector(self.d_x[idx], self.d_y[idx], rta)
+                pix_map = self.vector_to_pixel_map(rdx, rdy)
+                pol_msk = np.tile(pix_map, (self.nxh, self.nyh))
+                pol_cam = pol_msk * self.get_2d_psf(self.xps[idx], self.yps[idx], exc)
                 self.out += pol_cam
         return idx, 'done'
 
