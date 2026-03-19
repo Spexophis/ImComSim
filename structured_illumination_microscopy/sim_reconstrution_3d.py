@@ -6,7 +6,7 @@ Ruizhe Lin
 
 import os
 
-temppath = r'C:/Users/ruizhe.lin/Documents/python_codes/sim3d/temp'
+temppath = r'C:\Users\Ruiz\Documents\GitHub\ImComSim\structured_illumination_microscopy\temp'
 join = lambda fn: os.path.join(temppath, fn)
 
 import tifffile as tf
@@ -110,7 +110,7 @@ class SIM_RECON:
         msk = (rho <= 1.0).astype(np.float64)
         return msk * (self.n2 * depth / self.wl) * np.sqrt(1 - (self.na * msk * rho / self.n2) ** 2)
 
-    def get_psf(self, axial=(-1.6, 1.6, 0.16), zernike_arr=None):
+    def get_psf(self, axial=(-2.56, 2.56, 0.08), zernike_arr=None):
         bpp = self._get_pupil(zernike_arr)
         start, stop, step = axial
         nsteps = int((stop - start) / step + 1)
@@ -531,12 +531,12 @@ class SIM_RECON:
         return g
 
     def window(self, eta):
-        nz = self.nz * 2
-        nx = self.nx * 2
-        ny = self.ny * 2
+        nz = self.nz
+        nx = self.nx
+        ny = self.ny
         wd = np.zeros((nz, nx, ny))
-        wind = signal.tukey(nx, alpha=eta, sym=True)
-        wz = signal.tukey(nz, alpha=eta, sym=True)
+        wind = signal.windows.tukey(nx, alpha=eta, sym=True)
+        wz = signal.windows.tukey(nz, alpha=eta, sym=True)
         wx = np.tile(wind, (nx, 1))
         wy = wx.swapaxes(0, 1)
         w = wx * wy
@@ -651,7 +651,7 @@ class SIM_RECON:
 
 
 if __name__ == '__main__':
-    img = tf.imread(r"sim3d_simulation_data.tif")
+    img = tf.imread(r"C:\Users\Ruiz\Documents\GitHub\ImComSim\structured_illumination_microscopy\202602062331_sim3d_simulation_image_stack.tif")
     p = SIM_RECON(image_stack=img,
                   image_pixel_size=(0.08, 0.16),
                   numerical_aperture=1.4,

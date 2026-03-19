@@ -1,386 +1,350 @@
 """
-This script generates simulated data of the structured illumination microscopy (SIM),
-including 2-dimensional and 3-dimensional linear SIM.
-Ruizhe Lin
-2024-01-12
+Optimized SIM (Structured Illumination Microscopy) simulator.
+Supports 2D and 3D linear SIM.
 """
 
-import numpy as np
-import numpy.random as rd
-from scipy.special import factorial
-import tifffile as tf
 import time
-import concurrent.futures
+import numpy as np
+import numexpr as ne
+import tifffile as tf
+from numpy.random import rand, randint, uniform
+import psf_generator as pg
+
+TWO_PI = 2 * np.pi
 
 
 class SIM:
 
-    def __init__(self):
+    def __init__(self, nxh=64, nyh=64, nzh=16, dx=0.08, dy=0.08, dz=0.16,
+                 wl=0.505, na=1.4, n2=1.512, sp=0.24):
+        self.nxh = nxh
+        self.nyh = nyh
+        self.nzh = nzh
+        self.dx = dx
+        self.dy = dy
+        self.dz = dz
+        self.wl = wl
+        self.na = na
+        self.n2 = n2
+        self.sp = sp
 
-        self.nxh = 64
-        self.nyh = 64
-        self.nzh = 16
-        self.dx = 0.08  # um
-        self.dy = 0.08  # um
-        self.dz = 0.16  # um
-        self.wl = 0.505  # um
-        self.na = 1.4
-        self.n2 = 1.512
-        self.sp = 0.24  # um
+        self.nx = 2 * nxh
+        self.ny = 2 * nyh
+        self.nz = 2 * nzh
+
         self.number_of_angles = 0
         self.number_of_phases = 0
         self.number_of_fluorophores = 0
-        self.xps = np.array([])
-        self.yps = np.array([])
-        self.zps = np.array([])
-        self.focal_plane = self.nzh
-        self.I = None
+        self.xps = np.empty(0)
+        self.yps = np.empty(0)
+        self.zps = np.empty(0)
+        self.focal_plane = nzh
+        self.I = 10
         self.out = None
         self.cam_offset = 80.0
+        self.psf = pg.PSF(wl, na, n2, dx, self.nx)
 
-    def get_point_objects(self, number_of_dots):
-        coords_x = (self.dx * self.nxh * 2) * (0.8 * rd.rand(number_of_dots) + 0.1)
-        coords_y = (self.dy * self.nyh * 2) * (0.8 * rd.rand(number_of_dots) + 0.1)
-        coords_z = (self.dz * self.nzh * 2) * (0.8 * rd.rand(number_of_dots) - 0.4)
-        return number_of_dots, coords_x, coords_y, coords_z
 
-    def get_line_objects(self, number_of_lines):
-        number_of_fluorophores_per_line = np.random.randint(128, 512, number_of_lines)
-        x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
-        z_start = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_lines) - 0.4)
-        z_end = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_lines))
-        coords_x = np.array([])
-        coords_y = np.array([])
-        coords_z = np.array([])
-        for i in range(number_of_lines):
-            coords_x = np.concatenate((coords_x, np.linspace(x_start[i], x_end[i], number_of_fluorophores_per_line[i])))
-            coords_y = np.concatenate((coords_y, np.linspace(y_start[i], y_end[i], number_of_fluorophores_per_line[i])))
-            coords_z = np.concatenate((coords_z, np.linspace(z_start[i], z_end[i], number_of_fluorophores_per_line[i])))
-        return number_of_fluorophores_per_line.sum(), coords_x, coords_y, coords_z
+    def _rand_xy(self, n):
+        return (self.dx * self.nx) * (0.8 * rand(n) + 0.1)
 
-    def get_polynomial_objects(self, number_of_polynomials):
-        number_of_fluorophores_per_polynomial = np.random.randint(128, 512, number_of_polynomials)
-        coords_x = np.array([])
-        coords_y = np.array([])
-        coords_z = np.array([])
-        x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
-        y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
-        x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
-        y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
-        z_start = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_polynomials) - 0.4)
-        z_end = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_polynomials))
-        for i in range(number_of_polynomials):
-            degrees = np.random.randint(2, 8, 3)
-            poly_x = np.poly1d(np.random.uniform(-1, 1, size=(degrees[0] + 1)))
-            poly_y = np.poly1d(np.random.uniform(-1, 1, size=(degrees[1] + 1)))
-            poly_z = np.poly1d(np.random.uniform(-1, 1, size=(degrees[2] + 1)))
-            t = np.linspace(-1, 1, number_of_fluorophores_per_polynomial[i])
-            x = poly_x(t)
-            y = poly_y(t)
-            z = poly_z(t)
-            x = self.normalize(x, (x_start[i], x_end[i]))
-            y = self.normalize(y, (y_start[i], y_end[i]))
-            z = self.normalize(z, (z_start[i], z_end[i]))
-            coords_x = np.concatenate((coords_x, x))
-            coords_y = np.concatenate((coords_y, y))
-            coords_z = np.concatenate((coords_z, z))
-        return number_of_fluorophores_per_polynomial.sum(), coords_x, coords_y, coords_z
+    def _rand_z_start(self, n):
+        return (self.dz * self.nz) * (0.4 * rand(n) - 0.4)
 
-    def get_curve_objects(self, number_of_curves):
-        number_of_fluorophores_per_curve = np.random.randint(128, 512, number_of_curves)
-        coords_x = np.array([])
-        coords_y = np.array([])
-        coords_z = np.array([])
-        x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_curves) + 0.1)
-        y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_curves) + 0.1)
-        x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_curves) + 0.1)
-        y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_curves) + 0.1)
-        z_start = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_curves) - 0.4)
-        z_end = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_curves))
-        for c in range(number_of_curves):
-            num_coeffs = np.random.randint(2, 8)
-            coeffs = np.random.uniform(-1, 1, (3, num_coeffs))
-            phases = np.random.uniform(0, 2 * np.pi, (3, num_coeffs))
-            t = np.linspace(0, 2 * np.pi, number_of_fluorophores_per_curve[c])
-            x = self.fc(t, coeffs[0], phases[0])
-            y = self.fc(t, coeffs[1], phases[1])
-            z = self.fc(t, coeffs[2], phases[2])
-            x = self.normalize(x, (x_start[c], x_end[c]))
-            y = self.normalize(y, (y_start[c], y_end[c]))
-            z = self.normalize(z, (z_start[c], z_end[c]))
-            coords_x = np.concatenate((coords_x, x))
-            coords_y = np.concatenate((coords_y, y))
-            coords_z = np.concatenate((coords_z, z))
-        return number_of_fluorophores_per_curve.sum(), coords_x, coords_y, coords_z
+    def _rand_z_end(self, n):
+        return (self.dz * self.nz) * (0.4 * rand(n))
+
+    def get_point_objects(self, n):
+        x = self._rand_xy(n)
+        y = (self.dy * self.ny) * (0.8 * rand(n) + 0.1)
+        z = (self.dz * self.nz) * (0.8 * rand(n) - 0.4)
+        return n, x, y, z
+
+    def get_line_objects(self, n_lines):
+        counts = randint(128, 512, n_lines)
+        x_s, x_e = self._rand_xy(n_lines), self._rand_xy(n_lines)
+        y_s, y_e = self._rand_xy(n_lines), self._rand_xy(n_lines)
+        z_s, z_e = self._rand_z_start(n_lines), self._rand_z_end(n_lines)
+
+        total = counts.sum()
+        cx, cy, cz = np.empty(total), np.empty(total), np.empty(total)
+
+        offset = 0
+        for i, c in enumerate(counts):
+            sl = slice(offset, offset + c)
+            cx[sl] = np.linspace(x_s[i], x_e[i], c)
+            cy[sl] = np.linspace(y_s[i], y_e[i], c)
+            cz[sl] = np.linspace(z_s[i], z_e[i], c)
+            offset += c
+        return total, cx, cy, cz
+
+    def get_polynomial_objects(self, n_polys):
+        counts = randint(128, 512, n_polys)
+        x_s, x_e = self._rand_xy(n_polys), self._rand_xy(n_polys)
+        y_s, y_e = self._rand_xy(n_polys), self._rand_xy(n_polys)
+        z_s, z_e = self._rand_z_start(n_polys), self._rand_z_end(n_polys)
+
+        total = counts.sum()
+        cx, cy, cz = np.empty(total), np.empty(total), np.empty(total)
+
+        offset = 0
+        for i, c in enumerate(counts):
+            degrees = randint(2, 8, 3)
+            t = np.linspace(-1, 1, c)
+            x = np.poly1d(uniform(-1, 1, degrees[0] + 1))(t)
+            y = np.poly1d(uniform(-1, 1, degrees[1] + 1))(t)
+            z = np.poly1d(uniform(-1, 1, degrees[2] + 1))(t)
+
+            sl = slice(offset, offset + c)
+            cx[sl] = self._normalize(x, x_s[i], x_e[i])
+            cy[sl] = self._normalize(y, y_s[i], y_e[i])
+            cz[sl] = self._normalize(z, z_s[i], z_e[i])
+            offset += c
+        return total, cx, cy, cz
+
+    def get_curve_objects(self, n_curves):
+        counts = randint(128, 512, n_curves)
+        x_s, x_e = self._rand_xy(n_curves), self._rand_xy(n_curves)
+        y_s, y_e = self._rand_xy(n_curves), self._rand_xy(n_curves)
+        z_s, z_e = self._rand_z_start(n_curves), self._rand_z_end(n_curves)
+
+        total = counts.sum()
+        cx, cy, cz = np.empty(total), np.empty(total), np.empty(total)
+
+        offset = 0
+        for i, c in enumerate(counts):
+            num_coeffs = randint(2, 8)
+            coeffs = uniform(-1, 1, (3, num_coeffs))
+            phases = uniform(0, TWO_PI, (3, num_coeffs))
+            t = np.linspace(0, TWO_PI, c)
+
+            sl = slice(offset, offset + c)
+            cx[sl] = self._normalize(self._fourier_curve(t, coeffs[0], phases[0]), x_s[i], x_e[i])
+            cy[sl] = self._normalize(self._fourier_curve(t, coeffs[1], phases[1]), y_s[i], y_e[i])
+            cz[sl] = self._normalize(self._fourier_curve(t, coeffs[2], phases[2]), z_s[i], z_e[i])
+            offset += c
+        return total, cx, cy, cz
 
     @staticmethod
-    def fc(t, cs, phase):
-        return sum(a * np.sin(i * t + p) for i, (a, p) in enumerate(zip(cs, phase), 1))
+    def _fourier_curve(t, coeffs, phases):
+        i = np.arange(1, len(coeffs) + 1)
+        return (coeffs[:, np.newaxis] * np.sin(
+            i[:, np.newaxis] * t[np.newaxis, :] + phases[:, np.newaxis]
+        )).sum(axis=0)
 
     @staticmethod
-    def normalize(coord, range_):
-        r = np.max(coord) - np.min(coord)
+    def _normalize(coord, lo, hi):
+        cmin = coord.min()
+        cmax = coord.max()
+        r = cmax - cmin
         if r == 0:
-            return np.full(coord.shape, (range_[1] + range_[0]) / 2)
-        else:
-            return (coord - np.min(coord)) / (np.max(coord) - np.min(coord)) * np.abs(range_[1] - range_[0]) + np.min(
-                range_)
+            return np.full(coord.shape, (lo + hi) * 0.5)
+        return (coord - cmin) * (abs(hi - lo) / r) + min(lo, hi)
 
-    def get_objects(self, number_of_dots=None, number_of_lines=None, number_of_polynomials=None, number_of_curves=None):
-        if number_of_dots is not None:
-            _n, _x, _y, _z = self.get_point_objects(number_of_dots)
-            self.number_of_fluorophores = self.number_of_fluorophores + _n
-            self.xps = np.concatenate((self.xps, _x))
-            self.yps = np.concatenate((self.yps, _y))
-            self.zps = np.concatenate((self.zps, _z))
-        if number_of_lines is not None:
-            _n, _x, _y, _z = self.get_line_objects(number_of_lines)
-            self.number_of_fluorophores = self.number_of_fluorophores + _n
-            self.xps = np.concatenate((self.xps, _x))
-            self.yps = np.concatenate((self.yps, _y))
-            self.zps = np.concatenate((self.zps, _z))
-        if number_of_polynomials is not None:
-            _n, _x, _y, _z = self.get_polynomial_objects(number_of_polynomials)
-            self.number_of_fluorophores = self.number_of_fluorophores + _n
-            self.xps = np.concatenate((self.xps, _x))
-            self.yps = np.concatenate((self.yps, _y))
-            self.zps = np.concatenate((self.zps, _z))
-        if number_of_curves is not None:
-            _n, _x, _y, _z = self.get_curve_objects(number_of_curves)
-            self.number_of_fluorophores = self.number_of_fluorophores + _n
-            self.xps = np.concatenate((self.xps, _x))
-            self.yps = np.concatenate((self.yps, _y))
-            self.zps = np.concatenate((self.zps, _z))
+    def get_objects(self, number_of_dots=None, number_of_lines=None,
+                    number_of_polynomials=None, number_of_curves=None):
+        generators = [
+            (number_of_dots, self.get_point_objects),
+            (number_of_lines, self.get_line_objects),
+            (number_of_polynomials, self.get_polynomial_objects),
+            (number_of_curves, self.get_curve_objects),
+        ]
 
-    def get_pupil(self, zarr=None):
-        dp = 1 / (self.nxh * 2 * self.dx)
-        radius = (self.na / self.wl) / dp
-        msk = self._shift(self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)) / np.sqrt(
-            np.pi * radius ** 2) / (self.nxh * 2)
-        phi = np.zeros((self.nxh * 2, self.nyh * 2))
-        self.wf = msk * np.exp(1j * phi).astype(np.complex64)
-        if zarr is not None:
-            for z in range(len(zarr)):
-                n, m = self._zernike_j_nm(z + 1)
-                phi += zarr[z] * self._zernike(n, m, radius=radius, shape=(self.nxh * 2, self.nyh * 2))
-            self.wf *= np.exp(1j * phi).astype(np.complex64)
+        chunks_x, chunks_y, chunks_z = [], [], []
+        total = 0
+        for count, gen_func in generators:
+            if count is not None:
+                n, x, y, z = gen_func(count)
+                total += n
+                chunks_x.append(x)
+                chunks_y.append(y)
+                chunks_z.append(z)
 
-    def _add_psf_2d(self, x, y, I):
-        nx = self.nxh * 2
-        ny = self.nyh * 2
-        alpha = 2 * np.pi / nx / self.dx
-        gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
-        ph = self._shift(np.fromfunction(gxy, (nx, ny), dtype=np.float32))
-        wfp = np.sqrt(I) * ph * self.wf
-        return np.abs(np.fft.fft2(wfp)) ** 2
+        if chunks_x:
+            self.number_of_fluorophores += total
+            self.xps = np.concatenate([self.xps, *chunks_x]) if len(self.xps) else np.concatenate(chunks_x)
+            self.yps = np.concatenate([self.yps, *chunks_y]) if len(self.yps) else np.concatenate(chunks_y)
+            self.zps = np.concatenate([self.zps, *chunks_z]) if len(self.zps) else np.concatenate(chunks_z)
 
-    def _add_psf_3d(self, x, y, z, I):
-        nx = self.nxh * 2
-        ny = self.nyh * 2
-        alpha = 2 * np.pi / nx / self.dx
-        gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
-        ph = self._shift(np.fromfunction(gxy, (nx, ny), dtype=np.float32))
-        df = np.exp(1j * self._focus_mode(z)).astype(np.complex64)
-        wfp = np.sqrt(I) * ph * df * self.wf
-        return np.abs(np.fft.fft2(wfp)) ** 2
+    def _setup_sim_params(self, nang, nph, I):
+        self.number_of_angles = nang
+        self.number_of_phases = nph
+        self.I = I
 
-    def _focus_mode(self, w=0):  # wavefront phase for focusing
-        """ focus mode, d is depth in microns, nap is num. ap.
-        focuses, with depth correction """
-        na = self.na
-        n2 = self.n2
-        wl = self.wl
-        if na > n2:
-            raise "Numerical aperture cannot be greater than n2!"
-        dp = 1 / (self.nxh * 2 * self.dx)
-        radius = (self.na / self.wl) / dp
-        sinphim = na / n2
-        msk = self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius, origin=(0, 0))
-        rho = msk * self._radial_array(shape=(self.nxh * 2, self.nyh * 2), f=lambda x: x, origin=(0, 0)) / radius
-        return 2 * np.pi * msk * n2 * w * np.sqrt(1 - (sinphim * rho) ** 2) / wl
+        angles = np.arange(nang) * (TWO_PI / nang)
+        phases = np.arange(nph) * (TWO_PI / nph)
+        self.angle = angles
+        self.phase = phases
+        self.kx = TWO_PI * np.cos(angles) / self.sp
+        self.ky = TWO_PI * np.sin(angles) / self.sp
 
-    def _get_one_img_2d(self, indices):
-        nx = self.nxh * 2
-        ny = self.nyh * 2
-        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
-        for m in range(self.number_of_fluorophores):
-            Ip = self.I * 0.5 * (1 + np.cos(
-                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
-            self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
-                                                                                                self.yps[m], Ip)
-        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(
-            self.out[indices[0] * self.number_of_phases + indices[1], :, :])
-        return 'done', 'angle', indices[0], 'phase', indices[1]
+    def _precompute_psfs_2d(self):
+        """Pre-compute all 2D PSFs once — avoids redundant FFTs."""
+        n_fluor = self.number_of_fluorophores
+        psfs = np.empty((n_fluor, self.nx, self.ny), dtype=np.float64)
+        for m in range(n_fluor):
+            psfs[m] = self.psf.get_2d_psf((self.xps[m], self.yps[m], self.zps[m]))
+        return psfs
 
-    def _get_one_img_3d(self, indices):
-        nx = self.nxh * 2
-        ny = self.nyh * 2
-        nz = self.nzh * 2
-        self.out[indices[0], indices[1], :, :, :] = self.cam_offset + np.zeros((nz, nx, ny))
-        for zp in range(nz):
-            zplane = self.dz * (zp - self.focal_plane)
-            for m in range(self.number_of_fluorophores):
-                cs2xy = np.cos(
-                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + 2 * self.phase[
-                        indices[1]])
-                csxy = np.cos(
-                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + self.phase[
-                        indices[1]])
-                csz = np.cos(self.kz * (self.zps[m] - zplane))
-                Ip = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
-                self.out[indices[0], indices[1], zp, :, :] += self._add_psf_3d(self.xps[m], self.yps[m],
-                                                                               self.zps[m] - zplane, Ip)
-        self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.out[indices[0], indices[1], :, :, :])
-        return 'done', 'angle', indices[0], 'phase', indices[1]
+    def _precompute_psfs_3d(self, zplane_offsets):
+        """Pre-compute all 3D PSFs: shape (n_fluor, nz, nx, ny)."""
+        n_fluor = self.number_of_fluorophores
+        psfs = np.empty((n_fluor, self.nz, self.nx, self.ny), dtype=np.float64)
+        for m in range(n_fluor):
+            for zp, zoff in enumerate(zplane_offsets):
+                dz_val = self.zps[m] - zoff
+                psfs[m, zp] = self.psf.get_2d_psf((self.xps[m], self.yps[m], dz_val))
+        return psfs
+
+    def _illumination_2d(self, ang_idx):
+        """Compute illumination for all fluorophores and phases at once.
+
+        Returns: (nph, n_fluor) array of intensities.
+        """
+        # kx*x + ky*y for all fluorophores: shape (n_fluor,)
+        kx_a = self.kx[ang_idx]
+        ky_a = self.ky[ang_idx]
+        xps = self.xps
+        yps = self.yps
+        dot = ne.evaluate('kx_a * xps + ky_a * yps')  # (n_fluor,)
+
+        # Phase offsets: shape (nph,)
+        ph = self.phase
+        I = self.I
+
+        # dot[np.newaxis, :] + ph[:, np.newaxis] → (nph, n_fluor)
+        # I * 0.5 * (1 + cos(...))
+        dot_2d = dot[np.newaxis, :]  # (1, n_fluor)
+        ph_2d = ph[:, np.newaxis]    # (nph, 1)
+        return ne.evaluate('I * 0.5 * (1 + cos(dot_2d + ph_2d))')  # (nph, n_fluor)
+
+    def _illumination_3d(self, ang_idx):
+        """Compute 3D SIM illumination for all fluorophores and phases.
+
+        Returns: (nph, nz, n_fluor) array of intensities.
+        """
+        kx_a = self.kx[ang_idx]
+        ky_a = self.ky[ang_idx]
+        xps = self.xps
+        yps = self.yps
+        zps = self.zps
+        kz = self.kz
+
+        # dot product: shape (n_fluor,)
+        dot = ne.evaluate('kx_a * xps + ky_a * yps')
+
+        ph = self.phase          # (nph,)
+        zplane = self._zplane_offsets  # (nz,)
+        I = self.I
+
+        # Expand for broadcasting: (nph, 1, n_fluor) and (1, nz, n_fluor)
+        dot_3 = dot[np.newaxis, np.newaxis, :]     # (1, 1, n_fluor)
+        ph_3 = ph[:, np.newaxis, np.newaxis]        # (nph, 1, 1)
+        zps_3 = zps[np.newaxis, np.newaxis, :]      # (1, 1, n_fluor)
+        zpl_3 = zplane[np.newaxis, :, np.newaxis]   # (1, nz, 1)
+
+        # 3D SIM: I * (3 + 2*cos(2*(dot+phase)) + 4*cos(kz*(z-zplane))*cos(dot+phase))
+        return ne.evaluate(
+            'I * (3 + 2 * cos(2 * (0.5 * dot_3 + ph_3)) + 4 * cos(kz * (zps_3 - zpl_3)) * cos(0.5 * dot_3 + ph_3))'
+        )  # (nph, nz, n_fluor)
+
+    def _generate_2d_images(self):
+        """Generate all 2D SIM images — vectorized, no threading needed."""
+        nang = self.number_of_angles
+        nph = self.number_of_phases
+
+        # Pre-compute all PSFs: (n_fluor, nx, ny)
+        psfs = self._precompute_psfs_2d()
+
+        for a in range(nang):
+            # Illumination: (nph, n_fluor)
+            illum = self._illumination_2d(a)
+
+            for p in range(nph):
+                idx = a * nph + p
+                # Weighted sum of PSFs: illum[p, :] @ psfs reshaped
+                # (n_fluor,) . (n_fluor, nx*ny) → (nx*ny,)
+                img = np.dot(illum[p], psfs.reshape(self.number_of_fluorophores, -1))
+                self.out[idx] = self.cam_offset + img.reshape(self.nx, self.ny)
+
+            # Apply Poisson noise per angle block
+            block = self.out[a * nph:(a + 1) * nph]
+            self.out[a * nph:(a + 1) * nph] = np.random.poisson(np.clip(block, 0, None))
+
+    def _generate_3d_images(self):
+        """Generate all 3D SIM images — vectorized."""
+        nang = self.number_of_angles
+        nph = self.number_of_phases
+
+        # Pre-compute PSFs: (n_fluor, nz, nx, ny)
+        psfs = self._precompute_psfs_3d(self._zplane_offsets)
+        psfs_flat = psfs.reshape(self.number_of_fluorophores, self.nz, -1)  # (n_fluor, nz, nx*ny)
+
+        for a in range(nang):
+            # Illumination: (nph, nz, n_fluor)
+            illum = self._illumination_3d(a)
+
+            for p in range(nph):
+                for zp in range(self.nz):
+                    # illum[p, zp, :] @ psfs_flat[:, zp, :] → (nx*ny,)
+                    img = np.dot(illum[p, zp], psfs_flat[:, zp, :])
+                    self.out[a, p, zp] = self.cam_offset + img.reshape(self.nx, self.ny)
+
+            # Poisson noise
+            block = self.out[a]
+            self.out[a] = np.random.poisson(np.clip(block, 0, None))
 
     def sim_2d(self, nang=3, nph=3, I=1000):
-        nx = self.nxh * 2
-        ny = self.nxh * 2
-        self.number_of_angles = nang
-        self.number_of_phases = nph
-        self.I = I
-        self.angle = [n * (2 * np.pi / self.number_of_angles) for n in range(self.number_of_angles)]
-        self.phase = [n * (2 * np.pi / self.number_of_phases) for n in range(self.number_of_phases)]
-        self.kx = 2 * np.pi * np.cos(self.angle) / self.sp
-        self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
-        self.out = np.zeros((self.number_of_angles * self.number_of_phases, nx, ny))
-        indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self._get_one_img_2d, indices) for indices in indices_list]
-        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-            print(future.result())
+        self._setup_sim_params(nang, nph, I)
+        self.out = np.zeros((nang * nph, self.nx, self.ny), dtype=np.float64)
+        print(f"Generating 2D SIM: {nang} angles × {nph} phases, {self.number_of_fluorophores} fluorophores")
+        t0 = time.perf_counter()
+        self._generate_2d_images()
+        print(f"Done in {time.perf_counter() - t0:.2f}s")
 
     def sim_3d(self, nang=3, nph=5, I=1000):
-        nx = self.nxh * 2
-        ny = self.nxh * 2
-        nz = self.nzh * 2
-        self.number_of_angles = nang
-        self.number_of_phases = nph
-        self.I = I
-        self.angle = [n * (2 * np.pi / self.number_of_angles) for n in range(self.number_of_angles)]
-        self.phase = [n * (2 * np.pi / self.number_of_phases) for n in range(self.number_of_phases)]
-        self.kx = 2 * np.pi * np.cos(self.angle) / self.sp
-        self.ky = 2 * np.pi * np.sin(self.angle) / self.sp
+        self._setup_sim_params(nang, nph, I)
         phim = self.na / self.n2
-        self.kz = (2 * np.pi / self.sp) * (1 - np.sqrt(1 - phim ** 2))
-        self.out = np.zeros((self.number_of_angles, self.number_of_phases, nz, nx, ny))
-        indices_list = [(n, m) for n in range(self.number_of_angles) for m in range(self.number_of_phases)]
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(self._get_one_img_3d, indices) for indices in indices_list]
-        for i, future in enumerate(concurrent.futures.as_completed(futures)):
-            print(future.result())
+        self.kz = (TWO_PI / self.sp) * (1 - np.sqrt(1 - phim ** 2))
+        self._zplane_offsets = np.array([self.dz * (zp - self.focal_plane) for zp in range(self.nz)])
+        self.out = np.zeros((nang, nph, self.nz, self.nx, self.ny), dtype=np.float64)
+        print(f"Generating 3D SIM: {nang} angles × {nph} phases × {self.nz} z-planes, {self.number_of_fluorophores} fluorophores")
+        t0 = time.perf_counter()
+        self._generate_3d_images()
+        print(f"Done in {time.perf_counter() - t0:.2f}s")
 
-    def save_result_2d(self):
-        t = time.strftime("%Y%m%d%H%M")
-        path = t + '_'
-        tf.imwrite(path + 'sim2d_simulation_image_stack.tif', self.out, photometric='minisblack',
+    def save_result_2d(self, prefix=None):
+        if prefix is None:
+            prefix = time.strftime("%Y%m%d%H%M") + '_'
+        tf.imwrite(prefix + 'sim2d_simulation_image_stack.tif', self.out.astype(np.float32),
+                   photometric='minisblack',
                    metadata={'number of phases': self.number_of_phases,
                              'number of angles': self.number_of_angles,
                              'pixel size (xy)': self.dx,
                              'wavelength': self.wl, 'numerical aperture': self.na,
                              'pattern spacing': self.sp})
 
-    def save_result_3d(self):
-        t = time.strftime("%Y%m%d%H%M")
-        path = t + '_'
-        tf.imwrite(path + 'sim3d_simulation_image_stack.tif', self.out, photometric='minisblack',
+    def save_result_3d(self, prefix=None):
+        if prefix is None:
+            prefix = time.strftime("%Y%m%d%H%M") + '_'
+
+        data = self.out.transpose(2, 0, 1, 3, 4)  # (nz, nang, nph, nx, ny)
+        data = data.reshape(-1, self.nx, self.ny).astype(np.float32)  # (nz*nang*nph, nx, ny)
+
+        tf.imwrite(prefix + 'sim3d_simulation_image_stack.tif', data,
+                   photometric='minisblack',
                    metadata={'number of phases': self.number_of_phases,
                              'number of angles': self.number_of_angles,
-                             'pixel size (xy)': self.dx, 'pixel size (z)': self.dz,
-                             'wavelength': self.wl, 'numerical aperture': self.na,
+                             'number of z-planes': self.nz,
+                             'pixel size (xy)': self.dx,
+                             'pixel size (z)': self.dz,
+                             'wavelength': self.wl,
+                             'numerical aperture': self.na,
                              'pattern spacing': self.sp})
-
-    @staticmethod
-    def _image_grid_polar(x, y):
-        return np.sqrt(x ** 2 + y ** 2), np.arctan2(y, x)
-
-    @staticmethod
-    def _disc_array(shape=(128, 128), radius=64, origin=None):
-        nx, ny = shape
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx)
-        y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
-        disc = (rho < radius)
-        if not origin is None:
-            s0 = origin[0] - int(nx / 2)
-            s1 = origin[1] - int(ny / 2)
-            disc = np.roll(np.roll(disc, int(s0), 0), int(s1), 1)
-        return disc
-
-    @staticmethod
-    def _radial_array(shape=(128, 128), f=None, origin=None):
-        nx = shape[0]
-        ny = shape[1]
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx)
-        y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
-        rarr = f(rho)
-        if not origin is None:
-            s0 = origin[0] - nx / 2
-            s1 = origin[1] - ny / 2
-            rarr = np.roll(np.roll(rarr, int(s0), 0), int(s1), 1)
-        return rarr
-
-    @staticmethod
-    def _shift(arr, shifts=None):
-        if shifts is None:
-            shifts = np.array(arr.shape) / 2
-        if len(arr.shape) == len(shifts):
-            for m, p in enumerate(shifts):
-                arr = np.roll(arr, int(p), m)
-        return arr
-
-    @staticmethod
-    def _zernike_j_nm(j):
-        if j < 1:
-            raise ValueError("j must be a positive integer")
-        n = 0
-        while j > n:
-            n += 1
-            j -= n
-        m = -2 * j + n
-        if n % 2 == 0:
-            m = -m
-        return n, m
-
-    def _zernike(self, n, m, radius=64, shape=(128, 128), origin=None):
-        if (n < 0) or (n < abs(m)) or (n % 2 != abs(m) % 2):
-            raise ValueError("n and m are not valid Zernike indices")
-        if m < 0:
-            return ((-1) ** ((n - abs(m)) / 2)) * self._zernike(n, -m, radius, shape, origin)
-        # Compute the polynomial.
-        nx, ny = shape
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx) / radius
-        y = np.linspace(-oy, oy - 1, ny) / radius
-        xv, yv = np.meshgrid(x, y)
-        rho, phi = self._image_grid_polar(xv, yv)
-        kmax = int((n - abs(m)) / 2)
-        summation = 0
-        for k in range(kmax + 1):
-            summation += ((-1) ** k * factorial(n - k) /
-                          (factorial(k) * factorial(0.5 * (n + abs(m)) - k) *
-                           factorial(0.5 * (n - abs(m)) - k)) *
-                          rho ** (n - 2 * k))
-        return summation * np.cos(m * phi) * self._disc_array(shape, radius)
 
 
 if __name__ == '__main__':
-    s = SIM()
-    s.get_objects(512, None, None, None)
-    s.get_pupil()
-    # s._get_pupil(zarr=[0., 0., 0, 1.])
-    # s.sim_2d()
-    # s.save_result_2d()
+    s = SIM(nxh=128, nyh=128, nzh=16)
+    s.get_objects(256, 2, 2, 2)
     s.sim_3d()
     s.save_result_3d()
