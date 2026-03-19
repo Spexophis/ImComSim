@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="general" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="sim" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="uv (ImComSim)" project-jdk-type="Python SDK" />
 </project>

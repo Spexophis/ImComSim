@@ -1,0 +1,14 @@
+[project]
+name = "imcomsim"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numexpr>=2.14.1",
+    "numpy>=2.4.2",
+    "pyfftw>=0.15.1",
+    "scipy>=1.17.0",
+    "tifffile>=2026.1.28",
+]
