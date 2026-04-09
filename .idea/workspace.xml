@@ -5,7 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="70e70e27-4aef-4444-822f-000b9c580f6b" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/psf_generator.py" beforeDir="false" afterPath="$PROJECT_DIR$/psf_generator.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/vectorical_focusing.py" beforeDir="false" afterPath="$PROJECT_DIR$/vectorical_focusing.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />

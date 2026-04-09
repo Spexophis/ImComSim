@@ -46,8 +46,6 @@ from __future__ import annotations
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-import matplotlib.gridspec as gridspec
-import matplotlib.pyplot as plt
 import numpy as np
 from numpy.polynomial.legendre import leggauss
 from scipy.special import factorial
@@ -521,8 +519,6 @@ def convergence_study(
 
 
 if __name__ == "__main__":
-    import tifffile as tf
-
     NA, n, lam = 1.4, 1.515, 0.488
     N_theta = 128
     N_phi = 512

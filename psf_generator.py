@@ -1,7 +1,9 @@
-import numpy as np
-import numexpr as ne
-import pyfftw
 from os import cpu_count
+
+import numexpr as ne
+import numpy as np
+import pyfftw
+
 import zernike_polynomials as zernike
 
 TWO_PI = 2 * np.pi
@@ -34,7 +36,7 @@ class PSF:
             self._fft_in, self._fft_out,
             axes=(0, 1),
             direction='FFTW_FORWARD',
-            flags=['FFTW_MEASURE'],    # benchmarks to pick optimal algo
+            flags=['FFTW_MEASURE'],  # benchmarks to pick optimal algo
             threads=NTHREADS,
         )
 
