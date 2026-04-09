@@ -8,7 +8,7 @@ integral directly with high-order quadrature.
 Integration scheme
 ------------------
   θ ∈ [0, θmax]:  N_theta-point Gauss-Legendre (GL) quadrature
-                   Exact for polynomials of degree ≤ 2 N_theta − 1;
+                   Exact for polynomials of degree ≤ 2 N_theta − 1
                    exponential convergence for analytic integrands.
 
   φ ∈ [0, 2π):    N_phi-point uniform / trapezoidal rule
@@ -22,7 +22,7 @@ Main loop structure (per field component)
   Pre-compute:
     GL nodes/weights θ_i, w_i           O(N_theta)
     Phase grid W(θ_i, φ_j)              O(N_theta × N_phi)
-    Polarisation weights T_α(θ_i, φ_j)  O(N_theta × N_phi)
+    polarization weights T_α(θ_i, φ_j)  O(N_theta × N_phi)
 
   θ-loop (i = 0 … N_theta):
     exp_x[j,k] = exp(i 2π k⊥ cosφ_j  x_k)  →  (N_phi, Nx)
@@ -52,10 +52,6 @@ import numpy as np
 from numpy.polynomial.legendre import leggauss
 from scipy.special import factorial
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 1.  Zernike polynomials  – Noll 1976
-# ══════════════════════════════════════════════════════════════════════════════
 
 def noll_to_nm(j: int) -> Tuple[int, int]:
     if j < 1:
@@ -87,6 +83,9 @@ def zernike_radial(n: int, m: int, rho: np.ndarray) -> np.ndarray:
 
 
 def zernike(j: int, rho: np.ndarray, phi: np.ndarray) -> np.ndarray:
+    """
+    Zernike polynomials  – Noll 1976
+    """
     n, m = noll_to_nm(j)
     R = zernike_radial(n, m, rho)
     norm = np.sqrt(n + 1) if m == 0 else np.sqrt(2 * (n + 1))
@@ -111,14 +110,14 @@ def pupil_phase_zernike(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2.  Polarisation weights  T_α(θ, φ)
+# 2.  Polarization weights  T_α(θ, φ)
 #
 #  The 3×2 Richards-Wolf rotation matrix maps input Jones vector (ax,ay) to
 #  focal (Ex, Ey, Ez).  For cylindrical vector beams the Jones vector varies
-#  with φ; closed-form results are used.
+#  with φ closed-form results are used.
 # ══════════════════════════════════════════════════════════════════════════════
 
-def polarisation_weights_ring(
+def polarization_weights_ring(
         cos_theta: float,
         sin_theta: float,
         cos_phi: np.ndarray,
@@ -128,7 +127,7 @@ def polarisation_weights_ring(
     """
     Return (Tx, Ty, Tz) weight arrays of shape (N_phi,) for a single θ value.
 
-    All components are complex to support circular polarisation.
+    All components are complex to support circular polarization.
     """
     ct, st = cos_theta, sin_theta
     cp, sp = cos_phi, sin_phi
@@ -146,21 +145,21 @@ def polarisation_weights_ring(
 
     elif pol in ("lc", "left_circular"):
         f = 1.0 / np.sqrt(2)
-        Mxx = ct * cp ** 2 + sp ** 2;
+        Mxx = ct * cp ** 2 + sp ** 2
         Mxy = (ct - 1) * sp * cp
-        Myx = (ct - 1) * sp * cp;
+        Myx = (ct - 1) * sp * cp
         Myy = ct * sp ** 2 + cp ** 2
-        Mzx = -st * cp;
+        Mzx = -st * cp
         Mzy = -st * sp
         return f * (Mxx + 1j * Mxy), f * (Myx + 1j * Myy), f * (Mzx + 1j * Mzy)
 
     elif pol in ("rc", "right_circular"):
         f = 1.0 / np.sqrt(2)
-        Mxx = ct * cp ** 2 + sp ** 2;
+        Mxx = ct * cp ** 2 + sp ** 2
         Mxy = (ct - 1) * sp * cp
-        Myx = (ct - 1) * sp * cp;
+        Myx = (ct - 1) * sp * cp
         Myy = ct * sp ** 2 + cp ** 2
-        Mzx = -st * cp;
+        Mzx = -st * cp
         Mzy = -st * sp
         return f * (Mxx - 1j * Mxy), f * (Myx - 1j * Myy), f * (Mzx - 1j * Mzy)
 
@@ -173,13 +172,9 @@ def polarisation_weights_ring(
         return -sp + 0j * sp, cp + 0j * cp, np.zeros(len(cp), dtype=complex)
 
     else:
-        raise ValueError(f"Unknown polarisation {polarization!r}. "
+        raise ValueError(f"Unknown polarization {polarization!r}. "
                          "Choose: x | y | lc | rc | radial | azimuthal")
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3.  Direct-integration PSF engine
-# ══════════════════════════════════════════════════════════════════════════════
 
 class RichardsWolfDirect:
     """
@@ -318,8 +313,8 @@ class RichardsWolfDirect:
             kp = float(self._kperp[i])
             kzi = float(self._kz[i])
 
-            # Polarisation weights for this θ ring  →  (N_phi,) complex arrays
-            Tx, Ty, Tz = polarisation_weights_ring(
+            # polarization weights for this θ ring  →  (N_phi,) complex arrays
+            Tx, Ty, Tz = polarization_weights_ring(
                 ct, st, self._cos_phi, self._sin_phi, self.polarization
             )
 
@@ -349,7 +344,7 @@ class RichardsWolfDirect:
             prop_z = np.exp(1j * 2 * np.pi * kzi * z_out)
 
             # Accumulate into (Nz, Ny, Nx)
-            # xy_x.T has shape (Ny, Nx); prop broadcast over (Nz,)
+            # xy_x.T has shape (Ny, Nx) prop broadcast over (Nz,)
             Ex += prop_z[:, None, None] * xy_x.T[None, :, :]
             Ey += prop_z[:, None, None] * xy_y.T[None, :, :]
             Ez += prop_z[:, None, None] * xy_z.T[None, :, :]
@@ -485,14 +480,12 @@ class RichardsWolfDirect:
         return r_mid, profile
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 4.  Convergence test
-# ══════════════════════════════════════════════════════════════════════════════
-
 def convergence_study(
         NA: float, n: float, wavelength: float,
         zernike_coeffs: Dict[int, float],
-        x_out: np.ndarray, y_out: np.ndarray, z_focus: float,
+        x_out: np.ndarray,
+        y_out: np.ndarray,
+        z_focus: float,
         N_theta_list: List[int] = (10, 20, 40, 80, 160),
         N_phi: int = 256,
         vortex_charge: int = 0,
@@ -515,7 +508,7 @@ def convergence_study(
         psf_focal = psf[0]
         profiles[N_th] = psf_focal
 
-    # Normalise to finest
+    # Normalize to finest
     ref = profiles[N_theta_list[-1]]
     ref_norm = ref / ref.max()
 
@@ -527,323 +520,31 @@ def convergence_study(
     return {"profiles": profiles, "rmse": rmse, "ref_Ntheta": N_theta_list[-1]}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 5.  Visualisation
-# ══════════════════════════════════════════════════════════════════════════════
-
-_BG = "#0d0d0d";
-_AXBG = "#111111";
-_SP = "#2a2a2a"
-_TK = dict(colors="#777777", labelsize=6.5)
-_LB = dict(color="#aaaaaa", fontsize=7.5)
-_TT = dict(color="#e8e8e8", fontsize=8.5, pad=4)
-
-
-def _ax(fig, slot):
-    a = fig.add_subplot(slot)
-    a.set_facecolor(_AXBG)
-    for sp in a.spines.values(): sp.set_color(_SP)
-    a.tick_params(axis="both", **_TK)
-    return a
-
-
-def _im(ax, data, title, extent, xl="x", yl="y",
-        cmap="inferno", vmin=None, vmax=None, unit="µm"):
-    im = ax.imshow(data, origin="lower", cmap=cmap, extent=extent,
-                   aspect="auto", vmin=vmin, vmax=vmax, interpolation="bilinear")
-    ax.set_title(title, **_TT)
-    ax.set_xlabel(f"{xl} [{unit}]", **_LB)
-    ax.set_ylabel(f"{yl} [{unit}]", **_LB)
-    cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cb.ax.tick_params(**_TK)
-    return im
-
-
-def plot_dashboard(psf, Ex, Ey, Ez, z_out, x_out, y_out,
-                   title="Richards–Wolf (Direct GL)", unit="µm"):
-    Nz, Ny, Nx = psf.shape
-    iz = int(np.argmax(psf.reshape(Nz, -1).sum(axis=1)))
-    dx = x_out[1] - x_out[0] if Nx > 1 else 1
-    dy = y_out[1] - y_out[0] if Ny > 1 else 1
-    exy = [x_out[0] - dx / 2, x_out[-1] + dx / 2, y_out[0] - dy / 2, y_out[-1] + dy / 2]
-    exz = [x_out[0] - dx / 2, x_out[-1] + dx / 2, z_out[0], z_out[-1]]
-    eyz = [y_out[0] - dy / 2, y_out[-1] + dy / 2, z_out[0], z_out[-1]]
-
-    fig = plt.figure(figsize=(17, 9), facecolor=_BG)
-    gs = gridspec.GridSpec(2, 4, figure=fig,
-                           hspace=0.45, wspace=0.38,
-                           left=0.06, right=0.97, top=0.91, bottom=0.07)
-
-    _im(_ax(fig, gs[0, 0]), psf[iz], "PSF  XY (focus)", exy, unit=unit)
-    _im(_ax(fig, gs[0, 1]), psf[:, Ny // 2, :], "PSF  XZ", exz, xl="x", yl="z", unit=unit)
-    _im(_ax(fig, gs[0, 2]), psf[:, :, Nx // 2], "PSF  YZ", eyz, xl="y", yl="z", unit=unit)
-
-    # Pupil diagram placeholder: show GL node distribution
-    a = _ax(fig, gs[0, 3])
-    theta_nodes = np.arcsin(np.linspace(0, 1, 200)) * 180 / np.pi
-    a.set_facecolor(_AXBG)
-    for sp in a.spines.values(): sp.set_color(_SP)
-    a.tick_params(**_TK)
-    # show the GL nodes as vertical lines
-    sim_tmp = RichardsWolfDirect(1.4, 1.515, 0.532, N_theta=100, N_phi=1)
-    a.scatter(sim_tmp._theta * 180 / np.pi, sim_tmp._q_theta / sim_tmp._q_theta.max(),
-              c="#4fc3f7", s=8, alpha=0.8)
-    a.set_title("GL nodes & weights (θ)", **_TT)
-    a.set_xlabel("θ [deg]", **_LB);
-    a.set_ylabel("normalised weight", **_LB)
-
-    pk = psf[iz].max()
-    for c, (lbl, dat) in enumerate([
-        ("|Ex|²", np.abs(Ex[iz]) ** 2),
-        ("|Ey|²", np.abs(Ey[iz]) ** 2),
-        ("|Ez|²", np.abs(Ez[iz]) ** 2),
-        ("Total |E|²", psf[iz]),
-    ]):
-        _im(_ax(fig, gs[1, c]), dat, f"{lbl}  (focus)", exy,
-            vmin=0, vmax=pk, unit=unit)
-
-    fig.suptitle(title, color="#f0f0f0", fontsize=12, fontweight="bold", y=0.97)
-    return fig
-
-
-def plot_zoo(results, z_out, x_out, y_out, unit="µm"):
-    modes = list(results.keys())
-    ncols = len(modes)
-    rl = ["XY (focus)", "XZ", "|Ex|²", "|Ey|²", "|Ez|²"]
-    cmaps = ["inferno", "inferno", "viridis", "viridis", "magma"]
-
-    fig = plt.figure(figsize=(3.4 * ncols, 3.5 * 5), facecolor=_BG)
-    gs = gridspec.GridSpec(5, ncols, figure=fig,
-                           hspace=0.40, wspace=0.28,
-                           left=0.05, right=0.97, top=0.94, bottom=0.04)
-
-    dx = x_out[1] - x_out[0]
-    dy = y_out[1] - y_out[0]
-    exy = [x_out[0] - dx / 2, x_out[-1] + dx / 2, y_out[0] - dy / 2, y_out[-1] + dy / 2]
-    exz = [x_out[0] - dx / 2, x_out[-1] + dx / 2, z_out[0], z_out[-1]]
-
-    for c, name in enumerate(modes):
-        d = results[name]
-        psf, Ex, Ey, Ez = d["psf"], d["Ex"], d["Ey"], d["Ez"]
-        Nz, Ny, Nx = psf.shape
-        iz = int(np.argmax(psf.reshape(Nz, -1).sum(axis=1)))
-        pk = psf[iz].max()
-
-        panels = [
-            (psf[iz], exy, "x", "y"),
-            (psf[:, Ny // 2, :], exz, "x", "z"),
-            (np.abs(Ex[iz]) ** 2, exy, "x", "y"),
-            (np.abs(Ey[iz]) ** 2, exy, "x", "y"),
-            (np.abs(Ez[iz]) ** 2, exy, "x", "y"),
-        ]
-        for r, ((data, ext, xl, yl), cmap) in enumerate(zip(panels, cmaps)):
-            a = _ax(fig, gs[r, c])
-            im = a.imshow(data, origin="lower", cmap=cmap, extent=ext,
-                          aspect="auto", vmin=0, vmax=pk, interpolation="bilinear")
-            if r == 0:
-                a.set_title(name, color="#f5f5f5", fontsize=9,
-                            fontweight="bold", pad=5)
-            if c == 0:
-                a.set_ylabel(f"{rl[r]}\n{yl} [{unit}]", **_LB)
-            else:
-                a.set_ylabel("")
-            if r == 4:
-                a.set_xlabel(f"{xl} [{unit}]", **_LB)
-            plt.colorbar(im, ax=a, fraction=0.046, pad=0.04).ax.tick_params(**_TK)
-
-    fig.suptitle("Richards–Wolf Direct GL  |  Polarisation & Vortex Comparison",
-                 color="#f0f0f0", fontsize=13, fontweight="bold", y=0.975)
-    return fig
-
-
-def plot_convergence(conv_data, x_out, y_out, unit="µm"):
-    """Show focal-plane PSF profiles as N_theta increases."""
-    profiles = conv_data["profiles"]
-    rmse = conv_data["rmse"]
-    N_list = sorted(profiles.keys())
-    ref_N = conv_data["ref_Ntheta"]
-
-    colors = plt.cm.plasma(np.linspace(0.2, 0.9, len(N_list)))
-
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), facecolor=_BG)
-    fig.subplots_adjust(wspace=0.35, left=0.07, right=0.97, top=0.88, bottom=0.12)
-    fig.suptitle("Gauss-Legendre convergence  (x-pol, ideal PSF, radial profile)",
-                 color="#f0f0f0", fontsize=12, fontweight="bold")
-
-    # --- Panel 1: radial profiles ---
-    ax = axes[0];
-    ax.set_facecolor(_AXBG)
-    for sp in ax.spines.values(): sp.set_color(_SP)
-    ax.tick_params(**_TK)
-
-    # compute radial profiles
-    Ny, Nx = list(profiles.values())[0].shape
-    xx, yy = np.meshgrid(x_out, y_out)
-    rr = np.sqrt(xx ** 2 + yy ** 2).ravel()
-    r_bins = np.linspace(0, min(np.abs(x_out).max(), np.abs(y_out).max()), 150)
-    r_mid = 0.5 * (r_bins[:-1] + r_bins[1:])
-
-    for N_th, col in zip(N_list, colors):
-        psf_f = profiles[N_th]
-        vv = psf_f.ravel() / psf_f.max()
-        idx = np.digitize(rr, r_bins) - 1
-        prof = np.array([vv[idx == k].mean() if (idx == k).any() else 0
-                         for k in range(len(r_mid))])
-        lw = 2.5 if N_th == ref_N else 1.2
-        ls = "-" if N_th == ref_N else "--"
-        ax.plot(r_mid * 1e3, prof, color=col, lw=lw, ls=ls,
-                label=f"N_θ={N_th}" + (" (ref)" if N_th == ref_N else ""))
-
-    ax.set_xlabel(f"r [nm]", **_LB)
-    ax.set_ylabel("Normalised intensity", **_LB)
-    ax.set_title("Radial PSF profiles", **_TT)
-    ax.legend(fontsize=7, labelcolor="white",
-              facecolor="#1a1a1a", edgecolor="#333")
-
-    # --- Panel 2: difference from reference ---
-    ax2 = axes[1];
-    ax2.set_facecolor(_AXBG)
-    for sp in ax2.spines.values(): sp.set_color(_SP)
-    ax2.tick_params(**_TK)
-
-    ref_p = profiles[ref_N].ravel() / profiles[ref_N].max()
-    idx = np.digitize(rr, r_bins) - 1
-    ref_rad = np.array([ref_p[idx == k].mean() if (idx == k).any() else 0
-                        for k in range(len(r_mid))])
-
-    for N_th, col in zip(N_list[:-1], colors[:-1]):
-        vv = profiles[N_th].ravel() / profiles[N_th].max()
-        prof = np.array([vv[idx == k].mean() if (idx == k).any() else 0
-                         for k in range(len(r_mid))])
-        ax2.plot(r_mid * 1e3, np.abs(prof - ref_rad), color=col, lw=1.2,
-                 label=f"N_θ={N_th}")
-
-    ax2.set_xlabel("r [nm]", **_LB)
-    ax2.set_ylabel("|ΔI|  (vs reference)", **_LB)
-    ax2.set_title("Absolute error vs reference", **_TT)
-    ax2.legend(fontsize=7, labelcolor="white",
-               facecolor="#1a1a1a", edgecolor="#333")
-
-    # --- Panel 3: RMSE vs N_theta ---
-    ax3 = axes[2];
-    ax3.set_facecolor(_AXBG)
-    for sp in ax3.spines.values(): sp.set_color(_SP)
-    ax3.tick_params(**_TK)
-
-    ns = sorted(rmse.keys())
-    vals = [rmse[k] for k in ns]
-    ax3.semilogy(ns, vals, "o-", color="#4fc3f7", lw=2, ms=6)
-    ax3.set_xlabel("N_theta (GL order)", **_LB)
-    ax3.set_ylabel("RMS error  (vs N_theta=max)", **_LB)
-    ax3.set_title("GL convergence (log scale)", **_TT)
-    for n_v, v in zip(ns, vals):
-        ax3.annotate(f"{v:.1e}", (n_v, v), textcoords="offset points",
-                     xytext=(4, 4), color="#aaaaaa", fontsize=6.5)
-
-    return fig
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 6.  Demo
-# ══════════════════════════════════════════════════════════════════════════════
-
 if __name__ == "__main__":
+    import tifffile as tf
 
-    NA, n, lam = 1.4, 1.515, 0.488  # oil-immersion 532 nm [µm]
-    N_theta = 100  # GL order — 100 is very accurate
-    N_phi = 400  # uniform φ samples
-    dx = 0.016  # 50 nm lateral pixels
-    Nx = Ny = 128  # output pixels per lateral dim
+    NA, n, lam = 1.4, 1.515, 0.488
+    N_theta = 128
+    N_phi = 512
+    dx = 0.016
+    Nx = Ny = 128
     Nz = 81
     x_out = (np.arange(Nx) - Nx // 2) * dx
     y_out = (np.arange(Ny) - Ny // 2) * dx
     z_out = np.linspace(-2.0, 2.0, Nz)
 
-    aber_none = {}
-    aber_sph = {11: 0.4}  # 0.4 rad primary spherical
+    aber = {4: 0.3}
 
-    print("=" * 66)
-    print("  Richards–Wolf  –  Direct Gauss-Legendre Quadrature")
-    print(f"  N_theta={N_theta}  N_phi={N_phi}  grid={Nx}×{Ny}×{Nz}")
-    print(f"  NA={NA}  n={n}  λ={lam * 1e3:.0f} nm  pixel={dx * 1e3:.0f} nm")
-    print("=" * 66)
+    pol, charge, aber = "x", 0, {}
 
-    # ── Mode zoo ──────────────────────────────────────────────────────────────
-    modes = [
-        ("x", 0, aber_none, "Linear x\n(ideal)"),
-        ("x", 0, aber_sph, "Linear x\n(sph aber)"),
-        ("lc", 0, aber_none, "Left circular\nl=0"),
-        ("radial", 0, aber_none, "Radial pol.\nl=0"),
-        ("azimuthal", 0, aber_none, "Azimuthal pol.\nl=0"),
-        ("lc", 1, aber_none, "Left circular\nl=+1 vortex"),
-        ("x", 2, aber_none, "Linear x\nl=+2 vortex"),
-    ]
-
-    zoo_results = {}
-    for pol, charge, aber, label in modes:
-        print(f"\n  [{label.replace(chr(10), ' ')}]")
-        sim = RichardsWolfDirect(
-            NA=NA, n=n, wavelength=lam,
-            N_theta=N_theta, N_phi=N_phi, polarization=pol,
-        )
-        t0 = time.time()
-        psf, Ex, Ey, Ez = sim.compute(
-            aber, x_out, y_out, z_out,
-            vortex_charge=charge, normalize=True, verbose=True,
-        )
-        iz = int(np.argmax(psf.reshape(Nz, -1).sum(axis=1)))
-        fez = (np.abs(Ez[iz]) ** 2).sum() / psf[iz].sum()
-        # lateral FWHM (x and y)
-        row_x = psf[iz, Ny // 2, :]
-        row_y = psf[iz, :, Nx // 2]
-        half = row_x.max() / 2
-        ax_ = np.where(row_x >= half)[0]
-        ay_ = np.where(row_y >= half)[0]
-        fx = (ax_[-1] - ax_[0] + 1) * dx * 1e3 if len(ax_) > 1 else float("nan")
-        fy = (ay_[-1] - ay_[0] + 1) * dx * 1e3 if len(ay_) > 1 else float("nan")
-        print(f"    |Ez|²/|E|²={fez:.3f}  FWHM x={fx:.0f} y={fy:.0f} nm  "
-              f"total {time.time() - t0:.1f}s")
-        zoo_results[label] = dict(psf=psf, Ex=Ex, Ey=Ey, Ez=Ez)
-
-    # Save zoo
-    print("\n  Saving zoo figure...")
-    fig_zoo = plot_zoo(zoo_results, z_out, x_out, y_out)
-    fig_zoo.savefig("C:/Users/ruizhe.lin/Desktop/outputs/direct_zoo.png",
-                    dpi=150, bbox_inches="tight", facecolor=fig_zoo.get_facecolor())
-    plt.close(fig_zoo)
-
-    # Save individual dashboards for key modes
-    dash_modes = [
-        ("x", 0, aber_none, "Linear x\n(ideal)"),
-        ("radial", 0, aber_none, "Radial pol.\nl=0"),
-        ("azimuthal", 0, aber_none, "Azimuthal pol.\nl=0"),
-        ("lc", 1, aber_none, "Left circular\nl=+1 vortex"),
-    ]
-    for pol, charge, aber, label in dash_modes:
-        d = zoo_results[label]
-        fig = plot_dashboard(d["psf"], d["Ex"], d["Ey"], d["Ez"],
-                             z_out, x_out, y_out,
-                             title=f"Direct GL PSF  |  {label.replace(chr(10), ' ')}")
-        slug = pol + (f"_l{charge}" if charge else "")
-        fig.savefig(f"C:/Users/ruizhe.lin/Desktop/outputs/direct_db_{slug}.png",
-                    dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-        plt.close(fig)
-        print(f"  Saved direct_db_{slug}.png")
-
-    # ── Convergence study ──────────────────────────────────────────────────────
-    print("\n  Running GL convergence study...")
-    conv = convergence_study(
+    sim = RichardsWolfDirect(
         NA=NA, n=n, wavelength=lam,
-        zernike_coeffs={},
-        x_out=x_out, y_out=y_out,
-        z_focus=0.0,
-        N_theta_list=[10, 20, 40, 80, 160],
-        N_phi=256,
+        N_theta=N_theta, N_phi=N_phi, polarization=pol,
     )
-    fig_conv = plot_convergence(conv, x_out, y_out)
-    fig_conv.savefig("C:/Users/ruizhe.lin/Desktop/outputs/direct_convergence.png",
-                     dpi=150, bbox_inches="tight", facecolor=fig_conv.get_facecolor())
-    plt.close(fig_conv)
-    print("  Saved direct_convergence.png")
 
-    print("\n  Done.")
+    psf, Ex, Ey, Ez = sim.compute(
+        aber, x_out, y_out, z_out,
+        vortex_charge=charge, normalize=True, verbose=True,
+    )
+
+    # tf.imwrite(, psf)
