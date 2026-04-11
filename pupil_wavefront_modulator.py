@@ -43,7 +43,6 @@ References
 Noll (1976) JOSA 66, 207-211
 Richards & Wolf (1959) Proc. R. Soc. A 253, 358–379
 """
-from __future__ import annotations
 
 from functools import lru_cache
 from math import factorial
@@ -516,49 +515,16 @@ class PupilWavefrontModulator:
         rms = self.wavefront_rms(nx=nx)
         return float(np.exp(-rms ** 2))
 
-    # ── Dunder helpers ────────────────────────────────────────────────────────
-
-    def __repr__(self) -> str:
-        if self._coeffs:
-            terms = ", ".join(
-                f"Z{j}={c:.3g}" for j, c in sorted(self._coeffs.items())
-            )
-        else:
-            terms = "flat"
-        return (
-            f"PupilWavefrontModulator("
-            f"W=[{terms}], vortex={self.vortex_charge})"
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Quick demo / self-test
-# ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    # ── Pupil definition ──────────────────────────────────────────────────────
     mod = PupilWavefrontModulator(
-        zernike_coeffs={4: 0.5, 6: 0.3},   # defocus + 45° astigmatism
+        zernike_coeffs={6: 0.4, 11: 0.3},   # defocus + 45° astigmatism
         amplitude='gaussian',
-        amplitude_params={'sigma': 0.7},
+        amplitude_params={'sigma': 0.8},
         vortex_charge=0,
     )
-    print(mod)
-    print(f"  Wavefront RMS : {mod.wavefront_rms():.4f} rad")
-    print(f"  Strehl ratio  : {mod.strehl_ratio():.4f}")
-
-    # ── Noll table ────────────────────────────────────────────────────────────
-    print("\nNoll table (first 11 terms):")
-    for j, (n, m) in noll_table(11).items():
-        label = {0: 'piston',
-                 1: 'tilt x' if m > 0 else 'tilt y',
-                 2: 'defocus' if m == 0 else f'astig ({m:+d})',
-                 3: 'coma'   if abs(m) == 1 else f'trefoil ({m:+d})',
-                 4: 'spherical' if m == 0 else f'2nd astig ({m:+d})',
-                 }.get(n, f'n={n}, m={m:+d}')
-        print(f"  j={j:2d}  (n={n}, m={m:+d})  {label}")
 
     # ── Cartesian output ──────────────────────────────────────────────────────
     NX = 256
@@ -576,65 +542,10 @@ if __name__ == "__main__":
     phase_polar = mod.phase_polar(rho_2d, phi_2d)
     amp_polar   = mod.amplitude_polar(rho_2d)
 
-    # Verify centre value matches on both grids
-    rho_c = cart['rho'][NX // 2, NX // 2]
-    phi_c = cart['phi'][NX // 2, NX // 2]
-    phase_from_cart  = phase_cart[NX // 2, NX // 2]
-    phase_from_polar = float(mod.phase_polar(np.array([rho_c]),
-                                              np.array([phi_c])))
-    print(f"\nCentre pixel check:")
-    print(f"  phase (cartesian) = {phase_from_cart:.6f} rad")
-    print(f"  phase (polar)     = {phase_from_polar:.6f} rad")
-    assert abs(phase_from_cart - phase_from_polar) < 1e-10, \
-        "Cartesian and polar phases disagree at pupil centre!"
-    print("  ✓  Cartesian and polar representations are consistent.")
+    plt.figure()
+    plt.imshow(phase_polar)
+    plt.show()
 
-    # ── Plot ──────────────────────────────────────────────────────────────────
-    fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-    fig.suptitle("PupilWavefrontModulator – Cartesian vs Polar", fontsize=13)
-
-    # Cartesian phase
-    im0 = axes[0, 0].imshow(phase_cart, cmap='RdBu', origin='lower')
-    axes[0, 0].set_title("Phase – Cartesian [rad]")
-    fig.colorbar(im0, ax=axes[0, 0])
-
-    # Cartesian amplitude
-    im1 = axes[0, 1].imshow(amp_cart, cmap='viridis', vmin=0, vmax=1, origin='lower')
-    axes[0, 1].set_title("Amplitude – Cartesian")
-    fig.colorbar(im1, ax=axes[0, 1])
-
-    # Cartesian complex pupil (magnitude)
-    im2 = axes[0, 2].imshow(np.abs(cart['pupil_complex']), cmap='viridis',
-                             vmin=0, vmax=1, origin='lower')
-    axes[0, 2].set_title("|P| – Cartesian")
-    fig.colorbar(im2, ax=axes[0, 2])
-
-    # Polar phase (r, φ) → plotted as 2-D image
-    im3 = axes[1, 0].imshow(phase_polar, aspect='auto', cmap='RdBu',
-                             extent=[0, 360, 0, 1], origin='lower')
-    axes[1, 0].set_xlabel("φ [deg]")
-    axes[1, 0].set_ylabel("ρ")
-    axes[1, 0].set_title("Phase – Polar [rad]")
-    fig.colorbar(im3, ax=axes[1, 0])
-
-    # Polar amplitude
-    im4 = axes[1, 1].imshow(amp_polar, aspect='auto', cmap='viridis',
-                             vmin=0, vmax=1, extent=[0, 360, 0, 1], origin='lower')
-    axes[1, 1].set_xlabel("φ [deg]")
-    axes[1, 1].set_ylabel("ρ")
-    axes[1, 1].set_title("Amplitude – Polar")
-    fig.colorbar(im4, ax=axes[1, 1])
-
-    # Radial profiles
-    r_line = cart['rho'][NX // 2, NX // 2:]
-    p_line = phase_cart[NX // 2, NX // 2:]
-    a_line = amp_cart[NX // 2, NX // 2:]
-    axes[1, 2].plot(r_line, p_line, label="phase (rad)")
-    axes[1, 2].plot(r_line, a_line, label="amplitude")
-    axes[1, 2].axvline(1.0, color='k', lw=0.8, ls='--', label="pupil edge")
-    axes[1, 2].set_xlabel("ρ")
-    axes[1, 2].set_title("Radial profiles (φ = 0)")
-    axes[1, 2].legend(fontsize=8)
-
-    plt.tight_layout()
+    plt.figure()
+    plt.imshow(phase_cart)
     plt.show()
