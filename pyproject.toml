@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=2.4.4",
     "pandas>=3.0.2",
     "pyfftw>=0.15.1",
+    "scikit-image>=0.26.0",
     "scikit-learn>=1.8.0",
     "scipy>=1.17.1",
     "scipy-stubs>=1.17.1.3",

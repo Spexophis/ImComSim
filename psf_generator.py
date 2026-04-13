@@ -200,3 +200,12 @@ class PSF:
             ox = self.nx // 2
             disc = np.roll(disc, (int(origin[0] - ox), int(origin[1] - ox)), axis=(0, 1))
         return disc
+
+
+if __name__ == "__main__":
+    import tifffile as tf
+
+    p = PSF(dx=0.064, nx=256)
+    p.flat_wavefront()
+    psf3d = p.get_3d_psf((0, 0, 0), -1.6, 1.6, 0.16)
+
