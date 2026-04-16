@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import tifffile as tf
-
+from scipy.optimize import curve_fit
 import photophysics_simulator
 import psf_generator
 import pupil_wavefront_modulator
@@ -51,6 +51,8 @@ nxy = 128
 dxy = 0.04  # um
 
 p = psf_generator.PSF(wl=emi_wl, na=na, dx=dxy, nx=nxy)
+pn_rd = (emi_wl / (2 * na)) / dxy
+ph_msk = p._disc(radius=pn_rd) * 1
 
 v_405 = vectorical_focusing.RichardsWolfDirect(NA=na, n=1.515, wavelength=act_wl,
                                                N_theta=N_theta, N_phi=N_phi, polarization=polr)
@@ -86,11 +88,6 @@ for aber in abbr:
     # read_out = 20 * focus[sc_nz // 2] / focus[sc_nz // 2].sum()
 
     p.bpp = m.to_psf_wavefront(nx=p.nx, radius=p.radius)
-
-    # psf_2d = p.get_2d_psf((0, 0, 0))
-
-    pn_rd = (emi_wl / (2 * na)) / dxy
-    ph_msk = p._disc(radius=pn_rd) * 1
 
     kcs = np.zeros((sc_ny, sc_nx, 45, 4))
     psfs = np.zeros((sc_ny, sc_nx, nxy, nxy))
@@ -136,3 +133,166 @@ for aber in abbr:
     tf.imwrite(f"C:\\Users\\ruizhe.lin\\Desktop\\swkinetics\\kcs_z{zm}_{za}.tif", kcs)
     tf.imwrite(f"C:\\Users\\ruizhe.lin\\Desktop\\swkinetics\\psfs_m_z{zm}_{za}.tif", psfs_m)
     tf.imwrite(f"C:\\Users\\ruizhe.lin\\Desktop\\swkinetics\\kcs_m_z{zm}_{za}.tif", kcs_m)
+
+def exp_func(x_, a_, b_, c_):
+    return a_ * np.exp(b_ * x_) + c_
+
+img_0 = tf.imread(r"C:\Users\ruizhe.lin\Desktop\swkinetics_high405\kcs_m_z1_0.0.tif")
+img_1 = tf.imread(r"C:\Users\ruizhe.lin\Desktop\swkinetics_high405\kcs_m_z11_0.2.tif")
+img_2 = tf.imread(r"C:\Users\ruizhe.lin\Desktop\swkinetics_high405\kcs_m_z11_0.4.tif")
+img_3 = tf.imread(r"C:\Users\ruizhe.lin\Desktop\swkinetics_high405\kcs_m_z11_0.6.tif")
+img_4 = tf.imread(r"C:\Users\ruizhe.lin\Desktop\swkinetics_high405\kcs_m_z11_0.8.tif")
+
+x = 0.01 * np.arange(24)
+
+plt.figure()
+curve = img_0[ph_msk == 1].sum(axis=0)
+plt.plot(curve[11:35], label="0")
+print((curve[35]  - curve[11]))
+# --- Fit ---
+y = curve[11:35]
+p0 = [curve[11], -1, curve[35]]  # initial guess for [a, b, c]
+popt, pcov = curve_fit(exp_func, x, y, p0=p0, maxfev=10000)
+a, b, c = popt
+perr = np.sqrt(np.diag(pcov))  # 1-sigma uncertainties
+
+print(f"a = {a:.4f} ± {perr[0]:.4f}")
+print(f"b = {b:.4f} ± {perr[1]:.4f}")
+print(f"c = {c:.4f} ± {perr[2]:.4f}")
+
+# --- Evaluate fit ---
+x_fit = np.linspace(x.min(), x.max(), 320)
+y_fit = exp_func(x_fit, *popt)
+
+residuals = y - exp_func(x, *popt)
+ss_res = np.sum(residuals**2)
+ss_tot = np.sum((y - np.mean(y))**2)
+r_squared = 1 - ss_res / ss_tot
+print(f"R² = {r_squared:.6f}")
+
+k      = -b
+tau    = -1.0 / b
+t_half = np.log(2) / k
+print(k, tau, t_half)
+
+curve = img_1[ph_msk == 1].sum(axis=0)
+plt.plot(curve[11:35], label="1")
+print(curve[35]  - curve[11])
+
+# --- Fit ---
+y = curve[11:35]
+p0 = [curve[11], -1, curve[35]]  # initial guess for [a, b, c]
+popt, pcov = curve_fit(exp_func, x, y, p0=p0, maxfev=10000)
+a, b, c = popt
+perr = np.sqrt(np.diag(pcov))  # 1-sigma uncertainties
+
+print(f"a = {a:.4f} ± {perr[0]:.4f}")
+print(f"b = {b:.4f} ± {perr[1]:.4f}")
+print(f"c = {c:.4f} ± {perr[2]:.4f}")
+
+# --- Evaluate fit ---
+x_fit = np.linspace(x.min(), x.max(), 320)
+y_fit = exp_func(x_fit, *popt)
+
+residuals = y - exp_func(x, *popt)
+ss_res = np.sum(residuals**2)
+ss_tot = np.sum((y - np.mean(y))**2)
+r_squared = 1 - ss_res / ss_tot
+print(f"R² = {r_squared:.6f}")
+
+k      = -b
+tau    = -1.0 / b
+t_half = np.log(2) / k
+print(k, tau, t_half)
+
+curve = img_2[ph_msk == 1].sum(axis=0)
+plt.plot(curve[11:35], label="2")
+print(curve[35]  - curve[11])
+
+# --- Fit ---
+y = curve[11:35]
+p0 = [curve[11], -1, curve[35]]  # initial guess for [a, b, c]
+popt, pcov = curve_fit(exp_func, x, y, p0=p0, maxfev=10000)
+a, b, c = popt
+perr = np.sqrt(np.diag(pcov))  # 1-sigma uncertainties
+
+print(f"a = {a:.4f} ± {perr[0]:.4f}")
+print(f"b = {b:.4f} ± {perr[1]:.4f}")
+print(f"c = {c:.4f} ± {perr[2]:.4f}")
+
+# --- Evaluate fit ---
+x_fit = np.linspace(x.min(), x.max(), 320)
+y_fit = exp_func(x_fit, *popt)
+
+residuals = y - exp_func(x, *popt)
+ss_res = np.sum(residuals**2)
+ss_tot = np.sum((y - np.mean(y))**2)
+r_squared = 1 - ss_res / ss_tot
+print(f"R² = {r_squared:.6f}")
+
+k      = -b
+tau    = -1.0 / b
+t_half = np.log(2) / k
+print(k, tau, t_half)
+
+curve = img_3[ph_msk == 1].sum(axis=0)
+plt.plot(curve[11:35], label="3")
+print(curve[35]  - curve[11])
+
+# --- Fit ---
+y = curve[11:35]
+p0 = [curve[11], -1, curve[35]]  # initial guess for [a, b, c]
+popt, pcov = curve_fit(exp_func, x, y, p0=p0, maxfev=10000)
+a, b, c = popt
+perr = np.sqrt(np.diag(pcov))  # 1-sigma uncertainties
+
+print(f"a = {a:.4f} ± {perr[0]:.4f}")
+print(f"b = {b:.4f} ± {perr[1]:.4f}")
+print(f"c = {c:.4f} ± {perr[2]:.4f}")
+
+# --- Evaluate fit ---
+x_fit = np.linspace(x.min(), x.max(), 320)
+y_fit = exp_func(x_fit, *popt)
+
+residuals = y - exp_func(x, *popt)
+ss_res = np.sum(residuals**2)
+ss_tot = np.sum((y - np.mean(y))**2)
+r_squared = 1 - ss_res / ss_tot
+print(f"R² = {r_squared:.6f}")
+
+k      = -b
+tau    = -1.0 / b
+t_half = np.log(2) / k
+print(k, tau, t_half)
+
+curve = img_4[ph_msk == 1].sum(axis=0)
+plt.plot(curve[11:35], label="4")
+
+# --- Fit ---
+y = curve[11:35]
+p0 = [curve[11], -1, curve[35]]  # initial guess for [a, b, c]
+popt, pcov = curve_fit(exp_func, x, y, p0=p0, maxfev=10000)
+a, b, c = popt
+perr = np.sqrt(np.diag(pcov))  # 1-sigma uncertainties
+
+print(f"a = {a:.4f} ± {perr[0]:.4f}")
+print(f"b = {b:.4f} ± {perr[1]:.4f}")
+print(f"c = {c:.4f} ± {perr[2]:.4f}")
+
+# --- Evaluate fit ---
+x_fit = np.linspace(x.min(), x.max(), 320)
+y_fit = exp_func(x_fit, *popt)
+
+residuals = y - exp_func(x, *popt)
+ss_res = np.sum(residuals**2)
+ss_tot = np.sum((y - np.mean(y))**2)
+r_squared = 1 - ss_res / ss_tot
+print(f"R² = {r_squared:.6f}")
+
+k      = -b
+tau    = -1.0 / b
+t_half = np.log(2) / k
+print(k, tau, t_half)
+
+plt.show()
+plt.legend()
