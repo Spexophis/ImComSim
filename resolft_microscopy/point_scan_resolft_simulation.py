@@ -2,31 +2,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tifffile as tf
 from scipy.optimize import curve_fit
+
 import photophysics_simulator
 import psf_generator
 import pupil_wavefront_modulator
 import vectorical_focusing
-from noise_generator import add_readout_noise
 
-rsEGFP2_off_state = photophysics_simulator.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
-                                                             extincion_coeff_off=[22000, 60],
-                                                             wavelength=[405, 488],
-                                                             lifetime_on=1.6E-6,
-                                                             lifetime_off=20E-9,
-                                                             qy_cis_to_trans_anionic=1.65E-2,
-                                                             qy_trans_to_cis_neutral=0.33,
-                                                             qy_fluorescence_on=0.35,
-                                                             initial_populations=[1, 0, 0, 0])
-
-rsEGFP2_on_state = photophysics_simulator.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
-                                                            extincion_coeff_off=[22000, 60],
-                                                            wavelength=[405, 488],
-                                                            lifetime_on=1.6E-6,
-                                                            lifetime_off=20E-9,
-                                                            qy_cis_to_trans_anionic=1.65E-2,
-                                                            qy_trans_to_cis_neutral=0.33,
-                                                            qy_fluorescence_on=0.35,
-                                                            initial_populations=[0, 0, 1, 0])
+rsEGFP2_state = photophysics_simulator.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
+                                                         extincion_coeff_off=[22000, 60],
+                                                         wavelength=[405, 488],
+                                                         lifetime_on=1.6E-6,
+                                                         lifetime_off=20E-9,
+                                                         qy_cis_to_trans_anionic=1.65E-2,
+                                                         qy_trans_to_cis_neutral=0.33,
+                                                         qy_fluorescence_on=0.35,
+                                                         initial_populations=[1, 0, 0, 0])
 
 act_wl = 0.405
 exc_wl = 0.488
@@ -106,7 +96,7 @@ for aber in abbr:
                                                                      t_start=[0., 100e-3],
                                                                      dwell_time=450e-3)
             switching_experiment = photophysics_simulator.Experiment(illumination=switching_pulse,
-                                                                     fluorophore=rsEGFP2_off_state)
+                                                                     fluorophore=rsEGFP2_state)
             fluo_populations = switching_experiment.solve_kinetics(0.01)
             emin = np.trapezoid(fluo_populations[11:35, 3], dx=0.01)
             psf_full = np.fft.fftshift(p.get_2d_psf((x_out[i], y_out[j], 0)))
@@ -134,8 +124,10 @@ for aber in abbr:
     tf.imwrite(f"C:\\Users\\ruizhe.lin\\Desktop\\swkinetics\\psfs_m_z{zm}_{za}.tif", psfs_m)
     tf.imwrite(f"C:\\Users\\ruizhe.lin\\Desktop\\swkinetics\\kcs_m_z{zm}_{za}.tif", kcs_m)
 
+
 def exp_func(x_, a_, b_, c_):
     return a_ * np.exp(b_ * x_) + c_
+
 
 img_0 = tf.imread(r"C:\Users\ruizhe.lin\Desktop\swkinetics_high405\kcs_m_z1_0.0.tif")
 img_1 = tf.imread(r"C:\Users\ruizhe.lin\Desktop\swkinetics_high405\kcs_m_z11_0.2.tif")
@@ -148,7 +140,7 @@ x = 0.01 * np.arange(24)
 plt.figure()
 curve = img_0[ph_msk == 1].sum(axis=0)
 plt.plot(curve[11:35], label="0")
-print((curve[35]  - curve[11]))
+print((curve[35] - curve[11]))
 # --- Fit ---
 y = curve[11:35]
 p0 = [curve[11], -1, curve[35]]  # initial guess for [a, b, c]
@@ -165,19 +157,19 @@ x_fit = np.linspace(x.min(), x.max(), 320)
 y_fit = exp_func(x_fit, *popt)
 
 residuals = y - exp_func(x, *popt)
-ss_res = np.sum(residuals**2)
-ss_tot = np.sum((y - np.mean(y))**2)
+ss_res = np.sum(residuals ** 2)
+ss_tot = np.sum((y - np.mean(y)) ** 2)
 r_squared = 1 - ss_res / ss_tot
 print(f"R² = {r_squared:.6f}")
 
-k      = -b
-tau    = -1.0 / b
+k = -b
+tau = -1.0 / b
 t_half = np.log(2) / k
 print(k, tau, t_half)
 
 curve = img_1[ph_msk == 1].sum(axis=0)
 plt.plot(curve[11:35], label="1")
-print(curve[35]  - curve[11])
+print(curve[35] - curve[11])
 
 # --- Fit ---
 y = curve[11:35]
@@ -195,19 +187,19 @@ x_fit = np.linspace(x.min(), x.max(), 320)
 y_fit = exp_func(x_fit, *popt)
 
 residuals = y - exp_func(x, *popt)
-ss_res = np.sum(residuals**2)
-ss_tot = np.sum((y - np.mean(y))**2)
+ss_res = np.sum(residuals ** 2)
+ss_tot = np.sum((y - np.mean(y)) ** 2)
 r_squared = 1 - ss_res / ss_tot
 print(f"R² = {r_squared:.6f}")
 
-k      = -b
-tau    = -1.0 / b
+k = -b
+tau = -1.0 / b
 t_half = np.log(2) / k
 print(k, tau, t_half)
 
 curve = img_2[ph_msk == 1].sum(axis=0)
 plt.plot(curve[11:35], label="2")
-print(curve[35]  - curve[11])
+print(curve[35] - curve[11])
 
 # --- Fit ---
 y = curve[11:35]
@@ -225,19 +217,19 @@ x_fit = np.linspace(x.min(), x.max(), 320)
 y_fit = exp_func(x_fit, *popt)
 
 residuals = y - exp_func(x, *popt)
-ss_res = np.sum(residuals**2)
-ss_tot = np.sum((y - np.mean(y))**2)
+ss_res = np.sum(residuals ** 2)
+ss_tot = np.sum((y - np.mean(y)) ** 2)
 r_squared = 1 - ss_res / ss_tot
 print(f"R² = {r_squared:.6f}")
 
-k      = -b
-tau    = -1.0 / b
+k = -b
+tau = -1.0 / b
 t_half = np.log(2) / k
 print(k, tau, t_half)
 
 curve = img_3[ph_msk == 1].sum(axis=0)
 plt.plot(curve[11:35], label="3")
-print(curve[35]  - curve[11])
+print(curve[35] - curve[11])
 
 # --- Fit ---
 y = curve[11:35]
@@ -255,13 +247,13 @@ x_fit = np.linspace(x.min(), x.max(), 320)
 y_fit = exp_func(x_fit, *popt)
 
 residuals = y - exp_func(x, *popt)
-ss_res = np.sum(residuals**2)
-ss_tot = np.sum((y - np.mean(y))**2)
+ss_res = np.sum(residuals ** 2)
+ss_tot = np.sum((y - np.mean(y)) ** 2)
 r_squared = 1 - ss_res / ss_tot
 print(f"R² = {r_squared:.6f}")
 
-k      = -b
-tau    = -1.0 / b
+k = -b
+tau = -1.0 / b
 t_half = np.log(2) / k
 print(k, tau, t_half)
 
@@ -284,13 +276,13 @@ x_fit = np.linspace(x.min(), x.max(), 320)
 y_fit = exp_func(x_fit, *popt)
 
 residuals = y - exp_func(x, *popt)
-ss_res = np.sum(residuals**2)
-ss_tot = np.sum((y - np.mean(y))**2)
+ss_res = np.sum(residuals ** 2)
+ss_tot = np.sum((y - np.mean(y)) ** 2)
 r_squared = 1 - ss_res / ss_tot
 print(f"R² = {r_squared:.6f}")
 
-k      = -b
-tau    = -1.0 / b
+k = -b
+tau = -1.0 / b
 t_half = np.log(2) / k
 print(k, tau, t_half)
 
