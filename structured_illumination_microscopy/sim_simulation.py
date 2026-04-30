@@ -179,21 +179,22 @@ class SIM:
         self.ky = TWO_PI * np.sin(angles) / self.sp
 
     def _precompute_psfs_2d(self):
-        """Pre-compute all 2D PSFs once — avoids redundant FFTs."""
+        """Pre-compute all 2D PSFs; store flat (n_fluor, nx*ny) for direct matmul use."""
         n_fluor = self.number_of_fluorophores
-        psfs = np.empty((n_fluor, self.nx, self.ny), dtype=np.float64)
+        psfs = np.empty((n_fluor, self.nx * self.ny), dtype=np.float64)
         for m in range(n_fluor):
-            psfs[m] = self.psf.get_2d_psf((self.xps[m], self.yps[m], self.zps[m]))
+            psfs[m] = self.psf.get_2d_psf((self.xps[m], self.yps[m], self.zps[m])).ravel()
         return psfs
 
     def _precompute_psfs_3d(self, zplane_offsets):
-        """Pre-compute all 3D PSFs: shape (n_fluor, nz, nx, ny)."""
+        """Pre-compute all 3D PSFs; store as (nz, n_fluor, nx*ny) for batched matmul use."""
+        nz = len(zplane_offsets)
         n_fluor = self.number_of_fluorophores
-        psfs = np.empty((n_fluor, self.nz, self.nx, self.ny), dtype=np.float64)
-        for m in range(n_fluor):
-            for zp, zoff in enumerate(zplane_offsets):
+        psfs = np.empty((nz, n_fluor, self.nx * self.ny), dtype=np.float64)
+        for zp, zoff in enumerate(zplane_offsets):
+            for m in range(n_fluor):
                 dz_val = self.zps[m] - zoff
-                psfs[m, zp] = self.psf.get_2d_psf((self.xps[m], self.yps[m], dz_val))
+                psfs[zp, m] = self.psf.get_2d_psf((self.xps[m], self.yps[m], dz_val)).ravel()
         return psfs
 
     def _illumination_2d(self, ang_idx):
@@ -201,19 +202,15 @@ class SIM:
 
         Returns: (nph, n_fluor) array of intensities.
         """
-        # kx*x + ky*y for all fluorophores: shape (n_fluor,)
         kx_a = self.kx[ang_idx]
         ky_a = self.ky[ang_idx]
         xps = self.xps
         yps = self.yps
         dot = ne.evaluate('kx_a * xps + ky_a * yps')  # (n_fluor,)
 
-        # Phase offsets: shape (nph,)
         ph = self.phase
         I = self.I
 
-        # dot[np.newaxis, :] + ph[:, np.newaxis] → (nph, n_fluor)
-        # I * 0.5 * (1 + cos(...))
         dot_2d = dot[np.newaxis, :]  # (1, n_fluor)
         ph_2d = ph[:, np.newaxis]    # (nph, 1)
         return ne.evaluate('I * 0.5 * (1 + cos(dot_2d + ph_2d))')  # (nph, n_fluor)
@@ -230,68 +227,58 @@ class SIM:
         zps = self.zps
         kz = self.kz
 
-        # dot product: shape (n_fluor,)
-        dot = ne.evaluate('kx_a * xps + ky_a * yps')
+        dot = ne.evaluate('kx_a * xps + ky_a * yps')  # (n_fluor,)
 
         ph = self.phase          # (nph,)
         zplane = self._zplane_offsets  # (nz,)
         I = self.I
 
-        # Expand for broadcasting: (nph, 1, n_fluor) and (1, nz, n_fluor)
         dot_3 = dot[np.newaxis, np.newaxis, :]     # (1, 1, n_fluor)
         ph_3 = ph[:, np.newaxis, np.newaxis]        # (nph, 1, 1)
         zps_3 = zps[np.newaxis, np.newaxis, :]      # (1, 1, n_fluor)
         zpl_3 = zplane[np.newaxis, :, np.newaxis]   # (1, nz, 1)
 
-        # 3D SIM: I * (3 + 2*cos(2*(dot+phase)) + 4*cos(kz*(z-zplane))*cos(dot+phase))
         return ne.evaluate(
             'I * (3 + 2 * cos(2 * (0.5 * dot_3 + ph_3)) + 4 * cos(kz * (zps_3 - zpl_3)) * cos(0.5 * dot_3 + ph_3))'
         )  # (nph, nz, n_fluor)
 
     def _generate_2d_images(self):
-        """Generate all 2D SIM images — vectorized, no threading needed."""
+        """Generate all 2D SIM images using a single matmul per angle."""
         nang = self.number_of_angles
         nph = self.number_of_phases
 
-        # Pre-compute all PSFs: (n_fluor, nx, ny)
+        # psfs: (n_fluor, nx*ny) — pre-flattened for direct matmul
         psfs = self._precompute_psfs_2d()
 
         for a in range(nang):
-            # Illumination: (nph, n_fluor)
-            illum = self._illumination_2d(a)
-
-            for p in range(nph):
-                idx = a * nph + p
-                # Weighted sum of PSFs: illum[p, :] @ psfs reshaped
-                # (n_fluor,) . (n_fluor, nx*ny) → (nx*ny,)
-                img = np.dot(illum[p], psfs.reshape(self.number_of_fluorophores, -1))
-                self.out[idx] = self.cam_offset + img.reshape(self.nx, self.ny)
-
-            # Apply Poisson noise per angle block
-            block = self.out[a * nph:(a + 1) * nph]
+            illum = self._illumination_2d(a)  # (nph, n_fluor)
+            # One matmul replaces nph separate dot products:
+            # (nph, n_fluor) @ (n_fluor, nx*ny) → (nph, nx*ny)
+            imgs = illum @ psfs
+            block = self.cam_offset + imgs.reshape(nph, self.nx, self.ny)
             self.out[a * nph:(a + 1) * nph] = np.random.poisson(np.clip(block, 0, None))
 
     def _generate_3d_images(self):
-        """Generate all 3D SIM images — vectorized."""
+        """Generate all 3D SIM images using batched matmul — no phase/z inner loops."""
         nang = self.number_of_angles
         nph = self.number_of_phases
+        nz = self.nz
 
-        # Pre-compute PSFs: (n_fluor, nz, nx, ny)
+        # psfs: (nz, n_fluor, nx*ny) — stored in z-major order for batched matmul
         psfs = self._precompute_psfs_3d(self._zplane_offsets)
-        psfs_flat = psfs.reshape(self.number_of_fluorophores, self.nz, -1)  # (n_fluor, nz, nx*ny)
 
         for a in range(nang):
-            # Illumination: (nph, nz, n_fluor)
-            illum = self._illumination_3d(a)
+            illum = self._illumination_3d(a)  # (nph, nz, n_fluor)
 
-            for p in range(nph):
-                for zp in range(self.nz):
-                    # illum[p, zp, :] @ psfs_flat[:, zp, :] → (nx*ny,)
-                    img = np.dot(illum[p, zp], psfs_flat[:, zp, :])
-                    self.out[a, p, zp] = self.cam_offset + img.reshape(self.nx, self.ny)
+            # Batched matmul over z-planes:
+            #   illum_znp: (nz, nph, n_fluor)  [transpose is a free view]
+            #   psfs:      (nz, n_fluor, nx*ny) [already contiguous in this layout]
+            #   result:    (nz, nph, nx*ny)
+            illum_znp = illum.transpose(1, 0, 2)          # (nz, nph, n_fluor) — view
+            imgs_znp = np.matmul(illum_znp, psfs)          # (nz, nph, nx*ny)
+            imgs = imgs_znp.transpose(1, 0, 2).reshape(nph, nz, self.nx, self.ny)
 
-            # Poisson noise
-            block = self.out[a]
+            block = self.cam_offset + imgs
             self.out[a] = np.random.poisson(np.clip(block, 0, None))
 
     def sim_2d(self, nang=3, nph=3, I=1000):
@@ -306,7 +293,8 @@ class SIM:
         self._setup_sim_params(nang, nph, I)
         phim = self.na / self.n2
         self.kz = (TWO_PI / self.sp) * (1 - np.sqrt(1 - phim ** 2))
-        self._zplane_offsets = np.array([self.dz * (zp - self.focal_plane) for zp in range(self.nz)])
+        # Vectorized z-plane offsets: replaces list comprehension over range(nz)
+        self._zplane_offsets = self.dz * (np.arange(self.nz) - self.focal_plane)
         self.out = np.zeros((nang, nph, self.nz, self.nx, self.ny), dtype=np.float64)
         print(f"Generating 3D SIM: {nang} angles × {nph} phases × {self.nz} z-planes, {self.number_of_fluorophores} fluorophores")
         t0 = time.perf_counter()
