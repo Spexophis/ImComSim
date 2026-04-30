@@ -15,6 +15,7 @@ def add_illumination_noise(field_intensity, n_photons_total):
     # Poisson sample
     return np.random.poisson(mean_photons).astype(float)
 
+
 def add_readout_noise(image_photons, qe=0.9, gain=1.0, read_noise_e=3.0, offset=100):
     """
     image_photons : float array, expected photon counts per pixel

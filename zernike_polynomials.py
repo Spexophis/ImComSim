@@ -1,6 +1,7 @@
-import numpy as np
-from math import factorial
 from functools import lru_cache
+from math import factorial
+
+import numpy as np
 
 
 # --- Noll ordering (computed once at import) ---

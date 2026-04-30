@@ -419,7 +419,7 @@ class NegativeSwitchers:
         # Compute diagonal. If the matrix is built properly, the diagonal terms are the negative sum of each column
 
         for i in range(PF.shape[1]):
-            K_sum_columns = np.sum(K[i, :, :, ], axis=0)
+            K_sum_columns = np.sum(K[i, :, :,], axis=0)
             K_diagonal = np.diagflat(K_sum_columns)
             K[i, :, :] = K[i, :, :] - K_diagonal
         return K
@@ -432,6 +432,7 @@ class NegativeSwitchers:
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
+
     # Create the fluorophore model
     rsEGFP2_simple_model = NegativeSwitchers(extincion_coeff_on=[5260, 51560],
                                              extincion_coeff_off=[22000, 60],

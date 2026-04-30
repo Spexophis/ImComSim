@@ -203,9 +203,6 @@ class PSF:
 
 
 if __name__ == "__main__":
-    import tifffile as tf
-
     p = PSF(dx=0.064, nx=256)
     p.flat_wavefront()
     psf3d = p.get_3d_psf((0, 0, 0), -1.6, 1.6, 0.16)
-

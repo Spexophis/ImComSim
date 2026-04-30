@@ -1,6 +1,4 @@
 """
-pupil_wavefront_modulator.py
-============================
 Unified pupil amplitude and phase modulator using Zernike polynomials.
 
 Generates a pupil function  P(ρ, φ) = A(ρ) · exp(i · W(ρ, φ))  on both
@@ -12,7 +10,7 @@ providing a single source-of-truth pupil for:
 
 Zernike convention: 1-based Noll ordering matching vectorical_focusing.py.
 
-  j=1  piston           j=5  astigmatism 0° (cos 2φ)   j=9  trefoil y
+  j=1  piston          j=5  astigmatism 0° (cos 2φ)   j=9  trefoil y
   j=2  tilt x (cos φ)  j=6  astigmatism 45° (sin 2φ)  j=10 trefoil x
   j=3  tilt y (sin φ)  j=7  coma x (cos φ)            j=11 spherical
   j=4  defocus         j=8  coma y (sin φ)
@@ -25,7 +23,7 @@ Usage
     mod = PupilWavefrontModulator(
         zernike_coeffs={4: 0.5},
         amplitude='gaussian',
-        amplitude_params={'sigma': 0.7},
+        amplitude_params={'sigma': 0.7}
     )
 
     # --- psf_generator.PSF ---
@@ -133,7 +131,7 @@ def eval_zernike(j: int, rho: np.ndarray, phi: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     j   : 1-based Noll index
-    rho : array_like  normalised pupil radius  (0–1 inside pupil)
+    rho : array_like  normalized pupil radius  (0–1 inside pupil)
     phi : array_like  azimuthal angle [rad]
 
     Returns
@@ -143,20 +141,20 @@ def eval_zernike(j: int, rho: np.ndarray, phi: np.ndarray) -> np.ndarray:
     n, m = noll_to_nm(j)
     rho = np.asarray(rho, dtype=np.float64)
     phi = np.asarray(phi, dtype=np.float64)
-    R    = _eval_radial(n, abs(m), rho)
+    R = _eval_radial(n, abs(m), rho)
     norm = np.sqrt(n + 1.0) if m == 0 else np.sqrt(2.0 * (n + 1))
     if m == 0:
         return norm * R
     elif m > 0:
         return norm * R * np.cos(m * phi)
     else:
-        return norm * R * np.sin(-m * phi)   # -m = |m| for m < 0
+        return norm * R * np.sin(-m * phi)  # -m = |m| for m < 0
 
 
 def eval_zernike_sum(
-    coeffs: Dict[int, float],
-    rho: np.ndarray,
-    phi: np.ndarray,
+        coeffs: Dict[int, float],
+        rho: np.ndarray,
+        phi: np.ndarray,
 ) -> np.ndarray:
     """
     Weighted Zernike sum  W = Σ_j  c_j · Z_j(ρ, φ)  on arbitrary arrays.
@@ -164,7 +162,7 @@ def eval_zernike_sum(
     Parameters
     ----------
     coeffs : {noll_j (1-based): float [rad]}
-    rho    : array_like  normalised pupil radius
+    rho    : array_like  normalized pupil radius
     phi    : array_like  azimuthal angle [rad]
 
     Returns
@@ -173,7 +171,7 @@ def eval_zernike_sum(
     """
     rho = np.asarray(rho, dtype=np.float64)
     phi = np.asarray(phi, dtype=np.float64)
-    W   = np.zeros(np.shape(rho), dtype=np.float64)
+    W = np.zeros(np.shape(rho), dtype=np.float64)
     for j, c in coeffs.items():
         if c != 0.0:
             W += c * eval_zernike(j, rho, phi)
@@ -185,8 +183,8 @@ def eval_zernike_sum(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _build_amp_func(
-    amplitude: Union[str, Callable],
-    params: Optional[Dict],
+        amplitude: Union[str, Callable],
+        params: Optional[Dict],
 ) -> Callable[[np.ndarray], np.ndarray]:
     """Return A(ρ) callable from a preset name or a user-supplied callable."""
     if callable(amplitude):
@@ -207,7 +205,7 @@ def _build_amp_func(
             rho >= _i, 1.0, 0.0).astype(np.float64)
 
     if amplitude == 'super_gaussian':
-        w     = float(p.get('w', 1.0))
+        w = float(p.get('w', 1.0))
         order = float(p.get('order', 4))
         return lambda rho, _w=w, _o=order: np.exp(-((rho / _w) ** _o))
 
@@ -252,13 +250,13 @@ class PupilWavefrontModulator:
     """
 
     def __init__(
-        self,
-        zernike_coeffs: Union[Dict[int, float], List[float], np.ndarray, None] = None,
-        amplitude: Union[str, Callable] = 'uniform',
-        amplitude_params: Optional[Dict] = None,
-        vortex_charge: int = 0,
+            self,
+            zernike_coeffs: Union[Dict[int, float], List[float], np.ndarray, None] = None,
+            amplitude: Union[str, Callable] = 'uniform',
+            amplitude_params: Optional[Dict] = None,
+            vortex_charge: int = 0,
     ) -> None:
-        self._coeffs   = self._parse_coeffs(zernike_coeffs)
+        self._coeffs = self._parse_coeffs(zernike_coeffs)
         self._amp_func = _build_amp_func(amplitude, amplitude_params)
         self.vortex_charge = int(vortex_charge)
 
@@ -266,7 +264,7 @@ class PupilWavefrontModulator:
 
     @staticmethod
     def _parse_coeffs(
-        raw: Union[Dict[int, float], List[float], np.ndarray, None]
+            raw: Union[Dict[int, float], List[float], np.ndarray, None]
     ) -> Dict[int, float]:
         if raw is None:
             return {}
@@ -298,7 +296,7 @@ class PupilWavefrontModulator:
 
         Parameters
         ----------
-        rho : array_like  normalised pupil radius  (typically [0, 1])
+        rho : array_like  normalized pupil radius  (typically [0, 1])
         phi : array_like  azimuthal angle [rad]
 
         Returns
@@ -307,7 +305,7 @@ class PupilWavefrontModulator:
         """
         rho = np.asarray(rho, dtype=np.float64)
         phi = np.asarray(phi, dtype=np.float64)
-        W   = eval_zernike_sum(self._coeffs, rho, phi)
+        W = eval_zernike_sum(self._coeffs, rho, phi)
         if self.vortex_charge:
             W = W + self.vortex_charge * phi
         return W
@@ -319,7 +317,7 @@ class PupilWavefrontModulator:
 
         Parameters
         ----------
-        rho : array_like  normalised pupil radius
+        rho : array_like  normalized pupil radius
 
         Returns
         -------
@@ -335,15 +333,15 @@ class PupilWavefrontModulator:
 
         Parameters
         ----------
-        rho : array_like  normalised pupil radius
+        rho : array_like  normalized pupil radius
         phi : array_like  azimuthal angle [rad]
 
         Returns
         -------
         P : complex ndarray  same shape as rho
         """
-        rho  = np.asarray(rho, dtype=np.float64)
-        phi  = np.asarray(phi, dtype=np.float64)
+        rho = np.asarray(rho, dtype=np.float64)
+        phi = np.asarray(phi, dtype=np.float64)
         mask = rho <= 1.0
         A = np.where(mask, self._amp_func(rho), 0.0)
         W = np.where(mask, self.phase_polar(rho, phi), 0.0)
@@ -352,28 +350,27 @@ class PupilWavefrontModulator:
     # ── Cartesian-grid evaluation ─────────────────────────────────────────────
 
     def cartesian(
-        self,
-        nx: int = 256,
-        radius: Optional[float] = None,
-        dtype_complex: type = np.complex128,
-    ) -> Dict[str, np.ndarray]:
+            self,
+            nx: int = 256,
+            radius: Optional[float] = None,
+            dtype_complex: type = np.complex128,
+    ) -> Dict:
         """
-        Evaluate the pupil on an (nx, nx) Cartesian pixel grid.
+        Evaluate the pupil on a (nx, nx) Cartesian pixel grid.
 
-        Pixel centre convention: the pupil centre lies at continuous coordinate
-        (nx/2 − 0.5, nx/2 − 0.5), matching zernike_polynomials.py and
-        psf_generator.PSF.
+        Pixel center convention: the pupil center lies at continuous coordinate
+        (nx/2, nx/2), matching zernike_polynomials.py and psf_generator.PSF.
 
         Parameters
         ----------
         nx           : int    grid side length in pixels
-        radius       : float  pupil radius in pixels  (default nx/2 − 0.5)
+        radius       : float  pupil radius in pixels  (default nx/2)
         dtype_complex : NumPy complex dtype for 'pupil_complex'
 
         Returns
         -------
         dict
-          'rho'          : (nx, nx)  normalised pupil radius  ρ ∈ [0, ∞)
+          'rho'          : (nx, nx)  normalized pupil radius  ρ ∈ [0, ∞)
           'phi'          : (nx, nx)  azimuthal angle  [rad]
           'mask'         : (nx, nx)  bool — True inside pupil (ρ ≤ 1)
           'phase'        : (nx, nx)  W(ρ, φ) [rad], zero outside mask
@@ -381,27 +378,27 @@ class PupilWavefrontModulator:
           'pupil_complex': (nx, nx)  A · exp(i·W), complex, zero outside mask
         """
         if radius is None:
-            radius = nx / 2.0 - 0.5
+            radius = nx / 2.0
 
-        cx = cy = nx / 2.0 - 0.5
-        ax       = np.arange(nx, dtype=np.float64) - cx
-        xx, yy   = np.meshgrid(ax, ax, indexing='xy')   # xx along axis-1, yy along axis-0
+        cx = nx / 2.0
+        ax = np.arange(nx, dtype=np.float64) - cx
+        xx, yy = np.meshgrid(ax, ax, indexing='xy')  # xx along axis-1, yy along axis-0
 
-        rho  = np.hypot(xx, yy) / radius
-        phi  = np.arctan2(yy, xx)
+        rho = np.hypot(xx, yy) / radius
+        phi = np.arctan2(yy, xx)
         mask = rho <= 1.0
 
         phase = np.where(mask, self.phase_polar(rho, phi), 0.0)
-        amp   = np.where(mask, self._amp_func(rho), 0.0)
-        P     = np.where(mask, amp * np.exp(1j * phase), 0j).astype(dtype_complex)
+        amp = np.where(mask, self._amp_func(rho), 0.0)
+        pp = np.where(mask, amp * np.exp(1j * phase), 0j).astype(dtype_complex)
 
         return {
-            'rho'          : rho,
-            'phi'          : phi,
-            'mask'         : mask,
-            'phase'        : phase,
-            'amplitude'    : amp,
-            'pupil_complex': P,
+            'rho': rho,
+            'phi': phi,
+            'mask': mask,
+            'phase': phase,
+            'amplitude': amp,
+            'pupil_complex': pp,
         }
 
     # ── Compatibility shims ───────────────────────────────────────────────────
@@ -449,9 +446,9 @@ class PupilWavefrontModulator:
         return self._amp_func
 
     def phase_on_quadrature(
-        self,
-        rho_2d: np.ndarray,
-        phi_2d: np.ndarray,
+            self,
+            rho_2d: np.ndarray,
+            phi_2d: np.ndarray,
     ) -> np.ndarray:
         """
         Wavefront W on a RichardsWolfDirect (N_theta × N_phi) quadrature grid.
@@ -465,7 +462,7 @@ class PupilWavefrontModulator:
 
         Parameters
         ----------
-        rho_2d : (N_theta, N_phi)  normalised pupil radii from quadrature setup
+        rho_2d : (N_theta, N_phi)  normalized pupil radii from quadrature setup
         phi_2d : (N_theta, N_phi)  azimuthal angles [rad] from quadrature setup
 
         Returns
@@ -480,7 +477,7 @@ class PupilWavefrontModulator:
         """
         RMS wavefront error over the pupil [rad].
 
-        Computed on an (nx × nx) Cartesian grid, weighted uniformly inside
+        Computed on a (nx × nx) Cartesian grid, weighted uniformly inside
         the aperture (amplitude weighting is NOT applied).
 
         Parameters
@@ -492,7 +489,7 @@ class PupilWavefrontModulator:
         rms : float [rad]
         """
         d = self.cartesian(nx=nx)
-        W   = d['phase']
+        W = d['phase']
         msk = d['mask']
         return float(np.sqrt(np.mean(W[msk] ** 2))) if msk.any() else 0.0
 
@@ -514,38 +511,3 @@ class PupilWavefrontModulator:
         """
         rms = self.wavefront_rms(nx=nx)
         return float(np.exp(-rms ** 2))
-
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-
-    mod = PupilWavefrontModulator(
-        zernike_coeffs={6: 0.4, 11: 0.3},   # defocus + 45° astigmatism
-        amplitude='gaussian',
-        amplitude_params={'sigma': 0.8},
-        vortex_charge=0,
-    )
-
-    # ── Cartesian output ──────────────────────────────────────────────────────
-    NX = 256
-    cart = mod.cartesian(nx=NX)
-    phase_cart = cart['phase']
-    amp_cart   = cart['amplitude']
-
-    # ── Polar output (sample on a fine polar grid, then check equivalence) ────
-    nr, na = 200, 360
-    r_arr = np.linspace(0, 1, nr)
-    a_arr = np.linspace(0, 2 * np.pi, na, endpoint=False)
-    rho_2d = r_arr[:, None] * np.ones(na)
-    phi_2d = np.ones(nr)[:, None] * a_arr[None, :]
-
-    phase_polar = mod.phase_polar(rho_2d, phi_2d)
-    amp_polar   = mod.amplitude_polar(rho_2d)
-
-    plt.figure()
-    plt.imshow(phase_polar)
-    plt.show()
-
-    plt.figure()
-    plt.imshow(phase_cart)
-    plt.show()

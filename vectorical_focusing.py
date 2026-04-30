@@ -15,7 +15,7 @@ Integration scheme
                    Spectrally exact for trigonometric polynomials of
                    degree ≤ N_phi/2 — equivalent to Gauss for periodic fns.
 
-Apodisation: √(cos θ)  in the angular integral (Abbe sine condition).
+Apodization: √(cos θ)  in the angular integral (Abbe sine condition).
 
 Main loop structure (per field component)
 ------------------------------------------
