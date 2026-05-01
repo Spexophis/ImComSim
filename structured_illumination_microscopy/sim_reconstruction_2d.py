@@ -6,10 +6,21 @@ Ruizhe Lin
 
 from pylab import imshow, subplot, subplots, figure, colorbar
 from scipy.special import factorial
+from scipy.fft import fft2 as _fft2, ifft2 as _ifft2, fftshift
 import numpy as np
 import tifffile as tf
 from skimage.filters import window
-from numpy.fft import fftshift, fft2, ifft2
+
+_WORKERS = -1
+
+
+def fft2(a):
+    return _fft2(a, workers=_WORKERS)
+
+
+def ifft2(a):
+    return _ifft2(a, workers=_WORKERS)
+
 
 n_w = {0: 'zero', 1: 'first'}
 w_n = {'zero': 0, 'first': 1}
@@ -44,6 +55,7 @@ class SIM_RECON:
         self.eta = 2
         self.alpha = 0.04
         self.winf = self.window_function(self.alpha)
+        self._apod_cache = {}
         # parameters
         self.angles = {i: {'first': self.angs[i]} for i in range(self.nang)}
         self.spacings = {i: {'first': self.sps[i]} for i in range(self.nang)}
@@ -79,11 +91,11 @@ class SIM_RECON:
         nphases = self.nph
         norders = int((self.norders + 1) / 2)
         sepmat = np.zeros((self.norders, nphases), dtype=np.float32)
-        for j in range(nphases):
-            sepmat[0, j] = 1.0
-            for order in range(1, norders):
-                sepmat[2 * order - 1, j] = 2 * np.cos(2 * np.pi * (j * order) / nphases) / nphases
-                sepmat[2 * order, j] = 2 * np.sin(2 * np.pi * (j * order) / nphases) / nphases
+        j_arr = np.arange(nphases)
+        sepmat[0, :] = 1.0
+        for order in range(1, norders):
+            sepmat[2 * order - 1, :] = 2 * np.cos(2 * np.pi * j_arr * order / nphases) / nphases
+            sepmat[2 * order, :] = 2 * np.sin(2 * np.pi * j_arr * order / nphases) / nphases
         return np.linalg.inv(np.transpose(sepmat))
 
     def separate(self, nangle):
@@ -91,90 +103,69 @@ class SIM_RECON:
         angle, nph, Nw, Nw = self.img.shape
         outr = np.dot(self.sep_mat, self.img[nangle].reshape(nph, Nw ** 2))
         self.separr = np.zeros((self.norders, self.ratio * Nw, self.ratio * Nw), dtype=np.complex64)
-        self.separr[0] = np.fft.fftshift(self._interp(outr[0].reshape(Nw, Nw), self.ratio) * self.winf)
+        self.separr[0] = fftshift(self._interp(outr[0].reshape(Nw, Nw), self.ratio) * self.winf)
         for i in range(int(self.norders / 2)):
-            self.separr[1 + 2 * i] = np.fft.fftshift(
+            self.separr[1 + 2 * i] = fftshift(
                 self._interp(((outr[1 + 2 * i] + 1j * outr[2 + 2 * i]) / 2).reshape(Nw, Nw), self.ratio) * self.winf)
-            self.separr[2 + 2 * i] = np.fft.fftshift(
+            self.separr[2 + 2 * i] = fftshift(
                 self._interp(((outr[1 + 2 * i] - 1j * outr[2 + 2 * i]) / 2).reshape(Nw, Nw), self.ratio) * self.winf)
         self.otfs = {}
         self.imgfs = {}
         self.otf_zero_order()
 
     def otf_zero_order(self):
-        zsp = self.zero_suppression(0, 0)
-        self.otfs['zero'] = fft2(self.psf) * zsp
+        self.otfs['zero'] = fft2(self.psf)      # zero_suppression always returns 1
         self.imgfs['zero'] = fft2(self.separr[0])
+
+    def _compute_shift_indices(self, kx, ky):
+        """Analytically compute FFT peak indices for exp(2πi(kx·xv + ky·yv)).
+
+        Avoids an O(N²·log N) FFT call that was previously used just for argmax.
+        For the rolled coordinate grids used here, the DFT peak is at index
+        round(k * N) mod N, remapped to [-N/2, N/2).
+        """
+        Nw = self.nx
+        sx = int(round(kx * Nw)) % Nw
+        sy = int(round(ky * Nw)) % Nw
+        if sx >= Nw // 2:
+            sx -= Nw
+        if sy >= Nw // 2:
+            sy -= Nw
+        return sx, sy
 
     def shift_otfs_n_imgfs(self, pattern_orientation=0, pattern_spacing=0.24, frequency_order='first'):
         """ shift data in freq space by multiplication in real space """
         order = w_n[frequency_order]
-        Nw = self.nx
         dx = self.dx
         kx = dx * np.cos(pattern_orientation) / pattern_spacing
         ky = dx * np.sin(pattern_orientation) / pattern_spacing
-        # shift matrix
-        ysh = np.zeros((2, Nw, Nw), dtype=np.complex64)
-        ysh[0, :, :] = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv))
-        ysh[1, :, :] = np.exp(2j * np.pi * (-kx * self.xv - ky * self.yv))
-        # shift otf and imgf to positive
-        yshf = np.abs(fft2(ysh[0]))
-        sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < Nw / 2:
-            sx = sx
-        else:
-            sx = sx - Nw
-        if sy < Nw / 2:
-            sy = sy
-        else:
-            sy = sy - Nw
-        temp = np.sqrt(sx ** 2 + sy ** 2) / (2 * self.radius)
-        self.eh = np.append(self.eh, temp)
-        zsp = self.zero_suppression(sx, sy)
-        self.otfs[frequency_order + '_positive'] = fft2(self.psf * ysh[0]) * zsp
-        self.imgfs[frequency_order + '_positive'] = fft2(self.separr[2 * order - 1] * ysh[0])
-        # shift otf and imgf to negative
-        yshf = np.abs(fft2(ysh[1]))
-        sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < Nw / 2:
-            sx = sx
-        else:
-            sx = sx - Nw
-        if sy < Nw / 2:
-            sy = sy
-        else:
-            sy = sy - Nw
-        temp = np.sqrt(sx ** 2 + sy ** 2) / (2 * self.radius)
-        self.eh = np.append(self.eh, temp)
-        zsp = self.zero_suppression(sx, sy)
-        self.otfs[frequency_order + '_negative'] = fft2(self.psf * ysh[1]) * zsp
-        self.imgfs[frequency_order + '_negative'] = fft2(self.separr[2 * order] * ysh[1])
+        ysh_pos = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv)).astype(np.complex64)
+        ysh_neg = ysh_pos.conj()
+        # shift to positive — zero_suppression always returns 1, so zsp is omitted
+        sx, sy = self._compute_shift_indices(kx, ky)
+        self.eh = np.append(self.eh, np.sqrt(sx ** 2 + sy ** 2) / (2 * self.radius))
+        self.otfs[frequency_order + '_positive'] = fft2(self.psf * ysh_pos)
+        self.imgfs[frequency_order + '_positive'] = fft2(self.separr[2 * order - 1] * ysh_pos)
+        # shift to negative
+        sx, sy = self._compute_shift_indices(-kx, -ky)
+        self.eh = np.append(self.eh, np.sqrt(sx ** 2 + sy ** 2) / (2 * self.radius))
+        self.otfs[frequency_order + '_negative'] = fft2(self.psf * ysh_neg)
+        self.imgfs[frequency_order + '_negative'] = fft2(self.separr[2 * order] * ysh_neg)
 
     def get_overlap_w_zero(self, shift_orientation=0, shift_spacing=0.24, order_to_be_computed='first', verbose=False):
         """ shift data in freq space by multiplication in real space """
         order = w_n[order_to_be_computed]
         dx = self.dx
-        Nw = self.nx
         cutoff = self.cutoff
         imgf0 = self.imgfs['zero']
         otf0 = self.otfs['zero']
         kx = dx * np.cos(shift_orientation) / shift_spacing
         ky = dx * np.sin(shift_orientation) / shift_spacing
         ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv))
-        yshf = np.abs(fft2(ysh))
-        sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < Nw / 2:
-            sx = sx
-        else:
-            sx = sx - Nw
-        if sy < Nw / 2:
-            sy = sy
-        else:
-            sy = sy - Nw
-        zsp = self.zero_suppression(sx, sy)
-        otf = fft2(self.psf * ysh) * zsp
+        # zero_suppression always returns 1 — skip the argmax FFT entirely
+        otf = fft2(self.psf * ysh)
         imgf = fft2(self.separr[2 * order - 1] * ysh)
-        # calculate ovelapping area
+        # calculate overlapping area
         wimgf0 = otf * imgf0
         wimgf1 = otf0 * imgf
         msk = abs(otf0 * otf) > cutoff
@@ -185,10 +176,10 @@ class SIM_RECON:
             t = (msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())
             t[np.isnan(t)] = 0.0
             figure()
-            imshow(np.abs(np.fft.fftshift(t)), interpolation='nearest', vmin=0.0, vmax=2.0)
+            imshow(np.abs(fftshift(t)), interpolation='nearest', vmin=0.0, vmax=2.0)
             colorbar()
             figure()
-            imshow(np.angle(np.fft.fftshift(t)), interpolation='nearest')
+            imshow(np.angle(fftshift(t)), interpolation='nearest')
             colorbar()
         return mag, phase
 
@@ -226,90 +217,59 @@ class SIM_RECON:
         self.magnitudes[self.angle_index][order] = magarr[k, l][0]
         self.phases[self.angle_index][order] = pharr[k, l][0]
 
+    # --- Reconstruction helpers ---
+
+    def _init_reconstruction(self, zero_order):
+        nx, ny = self.nx, self.ny
+        self.Snum = np.zeros((nx, ny), dtype=np.complex64)
+        self.Sden = np.full((nx, ny), self.mu ** 2, dtype=np.complex64)
+        if zero_order:
+            otf = self.otfs['zero']
+            self.Snum += otf.conj() * self.imgfs['zero']
+            self.Sden += otf.real ** 2 + otf.imag ** 2
+
+    def _accumulate_order(self, angle_idx, od):
+        key = n_w[od + 1]
+        self.shift_otfs_n_imgfs(pattern_orientation=self.angles[angle_idx][key],
+                                pattern_spacing=self.spacings[angle_idx][key], frequency_order=key)
+        ph = self.magnitudes[angle_idx][key] * np.exp(-1j * self.phases[angle_idx][key])
+        otf_pos = self.otfs[key + '_positive']
+        otf_neg = self.otfs[key + '_negative']
+        self.Snum += ph * otf_pos.conj() * self.imgfs[key + '_positive']
+        self.Snum += ph.conj() * otf_neg.conj() * self.imgfs[key + '_negative']
+        self.Sden += otf_pos.real ** 2 + otf_pos.imag ** 2
+        self.Sden += otf_neg.real ** 2 + otf_neg.imag ** 2
+
+    def _finalize_reconstruction(self):
+        A = self.apod(self.eta)
+        self.S = A * self.Snum / self.Sden
+        self.finalimage = fftshift(ifft2(self.S))
+
     def reconstruct_by_angle(self, angle_indices=None, zero_order=True):
         if angle_indices is None:
             angle_indices = [0, 2]
-        nx = self.nx
-        ny = self.ny
-        mu = self.mu
-        self.Snum = np.zeros((nx, ny), dtype=np.complex64)
-        self.Sden = np.zeros((nx, ny), dtype=np.complex64)
-        self.Sden += mu ** 2
-        if zero_order:
-            imgf = self.imgfs['zero']
-            otf = self.otfs['zero']
-            self.Snum += otf.conj() * imgf
-            self.Sden += abs(otf) ** 2
-        for i in range(len(angle_indices)):
-            self.separate(angle_indices[i])
+        self._init_reconstruction(zero_order)
+        for i, ai in enumerate(angle_indices):
+            self.separate(ai)
             for od in range(int(self.norders / 2)):
-                self.shift_otfs_n_imgfs(pattern_orientation=self.angles[i][n_w[od + 1]],
-                                        pattern_spacing=self.spacings[i][n_w[od + 1]], frequency_order=n_w[od + 1])
-                ph = self.magnitudes[i][n_w[od + 1]] * np.exp(-1j * self.phases[i][n_w[od + 1]])
-                self.Snum += ph * self.otfs[n_w[od + 1] + '_positive'].conj() * self.imgfs[n_w[od + 1] + '_positive']
-                self.Sden += abs(self.otfs[n_w[od + 1] + '_positive']) ** 2
-                self.Snum += ph.conj() * self.otfs[n_w[od + 1] + '_negative'].conj() * self.imgfs[
-                    n_w[od + 1] + '_negative']
-                self.Sden += abs(self.otfs[n_w[od + 1] + '_negative']) ** 2
-        A = self.apod(self.eta)
-        self.S = A * self.Snum / self.Sden
-        self.finalimage = fftshift(ifft2(self.S))
+                self._accumulate_order(i, od)
+        self._finalize_reconstruction()
 
     def reconstruct_by_order(self, order=1, zero_order=True):
-        n = self.nang
-        nx = self.nx
-        ny = self.ny
-        mu = self.mu
-        self.Snum = np.zeros((nx, ny), dtype=np.complex64)
-        self.Sden = np.zeros((nx, ny), dtype=np.complex64)
-        self.Sden += mu ** 2
-        if zero_order:
-            imgf = self.imgfs['zero']
-            otf = self.otfs['zero']
-            self.Snum += otf.conj() * imgf
-            self.Sden += abs(otf) ** 2
-        for i in range(n):
+        self._init_reconstruction(zero_order)
+        for i in range(self.nang):
             self.separate(i)
             for od in range(order):
-                self.shift_otfs_n_imgfs(pattern_orientation=self.angles[i][n_w[od + 1]],
-                                        pattern_spacing=self.spacings[i][n_w[od + 1]], frequency_order=n_w[od + 1])
-                ph = self.magnitudes[i][n_w[od + 1]] * np.exp(-1j * self.phases[i][n_w[od + 1]])
-                self.Snum += ph * self.otfs[n_w[od + 1] + '_positive'].conj() * self.imgfs[n_w[od + 1] + '_positive']
-                self.Sden += abs(self.otfs[n_w[od + 1] + '_positive']) ** 2
-                self.Snum += ph.conj() * self.otfs[n_w[od + 1] + '_negative'].conj() * self.imgfs[
-                    n_w[od + 1] + '_negative']
-                self.Sden += abs(self.otfs[n_w[od + 1] + '_negative']) ** 2
-        A = self.apod(self.eta)
-        self.S = A * self.Snum / self.Sden
-        self.finalimage = fftshift(ifft2(self.S))
+                self._accumulate_order(i, od)
+        self._finalize_reconstruction()
 
     def reconstruct_all(self, zero_order=True):
-        n = self.nang
-        nx = self.nx
-        ny = self.ny
-        mu = self.mu
-        self.Snum = np.zeros((nx, ny), dtype=np.complex64)
-        self.Sden = np.zeros((nx, ny), dtype=np.complex64)
-        self.Sden += mu ** 2
-        if zero_order:
-            imgf = self.imgfs['zero']
-            otf = self.otfs['zero']
-            self.Snum += otf.conj() * imgf
-            self.Sden += abs(otf) ** 2
-        for i in range(n):
+        self._init_reconstruction(zero_order)
+        for i in range(self.nang):
             self.separate(i)
             for od in range(int(self.norders / 2)):
-                self.shift_otfs_n_imgfs(pattern_orientation=self.angles[i][n_w[od + 1]],
-                                        pattern_spacing=self.spacings[i][n_w[od + 1]], frequency_order=n_w[od + 1])
-                ph = self.magnitudes[i][n_w[od + 1]] * np.exp(-1j * self.phases[i][n_w[od + 1]])
-                self.Snum += ph * self.otfs[n_w[od + 1] + '_positive'].conj() * self.imgfs[n_w[od + 1] + '_positive']
-                self.Sden += abs(self.otfs[n_w[od + 1] + '_positive']) ** 2
-                self.Snum += ph.conj() * self.otfs[n_w[od + 1] + '_negative'].conj() * self.imgfs[
-                    n_w[od + 1] + '_negative']
-                self.Sden += abs(self.otfs[n_w[od + 1] + '_negative']) ** 2
-        A = self.apod(self.eta)
-        self.S = A * self.Snum / self.Sden
-        self.finalimage = fftshift(ifft2(self.S))
+                self._accumulate_order(i, od)
+        self._finalize_reconstruction()
 
     def save_reconstruction(self, fn=''):
         tf.imwrite(fn + 'sim2d_final_image.tif', self.finalimage.real.astype(np.float32), photometric='minisblack')
@@ -318,10 +278,7 @@ class SIM_RECON:
 
     def window_function(self, alpha):
         wxy = window(('tukey', alpha), self.nx)
-        wx = np.tile(wxy, (self.nx, 1))
-        wy = wx.swapaxes(0, 1)
-        w = wx * wy
-        return w
+        return np.outer(wxy, wxy)
 
     def zero_suppression(self, sx, sy, h=False):
         if h:
@@ -330,8 +287,9 @@ class SIM_RECON:
             return 1
 
     def apod(self, eta):
-        return fftshift(
-            window(('kaiser', eta), (self.nx, self.nx)))
+        if eta not in self._apod_cache:
+            self._apod_cache[eta] = fftshift(window(('kaiser', eta), (self.nx, self.nx)))
+        return self._apod_cache[eta]
 
     @staticmethod
     def _interp(arr, ratio):
@@ -339,9 +297,8 @@ class SIM_RECON:
         px = int((nx * (ratio - 1)) / 2)
         py = int((ny * (ratio - 1)) / 2)
         arrf = fft2(arr)
-        arro = np.pad(np.fft.fftshift(arrf), ((px, px), (py, py)), 'constant', constant_values=(0))
-        out = ifft2(np.fft.fftshift(arro))
-        return out
+        arro = np.pad(fftshift(arrf), ((px, px), (py, py)), 'constant', constant_values=0)
+        return ifft2(fftshift(arro))
 
     @staticmethod
     def _image_grid_polar(x, y):
@@ -350,14 +307,11 @@ class SIM_RECON:
     @staticmethod
     def _disc_array(shape=(128, 128), radius=64, origin=None):
         nx, ny = shape
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx)
-        y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
-        disc = (rho < radius)
-        if not origin is None:
+        x = np.linspace(-nx / 2, nx / 2 - 1, nx)
+        y = np.linspace(-ny / 2, ny / 2 - 1, ny)
+        X, Y = np.meshgrid(x, y, sparse=True)
+        disc = (X ** 2 + Y ** 2) < radius ** 2
+        if origin is not None:
             s0 = origin[0] - int(nx / 2)
             s1 = origin[1] - int(ny / 2)
             disc = np.roll(np.roll(disc, int(s0), 0), int(s1), 1)
@@ -365,16 +319,12 @@ class SIM_RECON:
 
     @staticmethod
     def _radial_array(shape=(128, 128), f=None, origin=None):
-        nx = shape[0]
-        ny = shape[1]
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx)
-        y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
-        rarr = f(rho)
-        if not origin is None:
+        nx, ny = shape[0], shape[1]
+        x = np.linspace(-nx / 2, nx / 2 - 1, nx)
+        y = np.linspace(-ny / 2, ny / 2 - 1, ny)
+        X, Y = np.meshgrid(x, y, sparse=True)
+        rarr = f(np.sqrt(X ** 2 + Y ** 2))
+        if origin is not None:
             s0 = origin[0] - nx / 2
             s1 = origin[1] - ny / 2
             rarr = np.roll(np.roll(rarr, int(s0), 0), int(s1), 1)
