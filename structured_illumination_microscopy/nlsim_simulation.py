@@ -56,15 +56,6 @@ class NLSIM:
                                                       qy_trans_to_cis_neutral=0.33,
                                                       qy_fluorescence_on=0.35,
                                                       initial_populations=[0, 0, 1, 0])
-        self.rsEGFP2_off_state = phs.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
-                                                       extincion_coeff_off=[22000, 60],
-                                                       wavelength=[405, 488],
-                                                       lifetime_on=1.6E-6,
-                                                       lifetime_off=20E-9,
-                                                       qy_cis_to_trans_anionic=1.65E-2,
-                                                       qy_trans_to_cis_neutral=0.33,
-                                                       qy_fluorescence_on=0.35,
-                                                       initial_populations=[1, 0, 0, 0])
 
     def get_point_objects(self, number_of_dots):
         coords_x = (self.dx * self.nxh * 2) * (0.8 * rd.rand(number_of_dots) + 0.1)
@@ -197,22 +188,6 @@ class NLSIM:
                 phi += zarr[z] * self._zernike(n, m, radius=radius, shape=(self.nxh * 2, self.nyh * 2))
             self.wf *= np.exp(1j * phi).astype(np.complex64)
 
-    def _on_probability(self, pw=0.5, expo=1.0):
-        on_switching_pulse = phs.ModulatedLasers(wavelengths=[405, 488], power_densities=[pw, 0.0],
-                                                 pulse_widths=[expo, 0.0], t_start=[1, 2.5], dwell_time=30)
-        on_switching_experiment = phs.Experiment(illumination=on_switching_pulse, fluorophore=self.rsEGFP2_off_state)
-        populations = on_switching_experiment.solve_kinetics(0.01)
-        p_on = populations[-1, 2]
-        return 1 if rd.random() < p_on else 0
-
-    def _off_probability(self, pw=0.5, expo=1.0):
-        off_switching_pulse = phs.ModulatedLasers(wavelengths=[405, 488], power_densities=[0.0, pw],
-                                                  pulse_widths=[0.0, expo], t_start=[1, 2.5], dwell_time=30)
-        off_switching_experiment = phs.Experiment(illumination=off_switching_pulse, fluorophore=self.rsEGFP2_on_state)
-        populations = off_switching_experiment.solve_kinetics(0.01)
-        p_off = populations[-1, 0]
-        return 0 if rd.random() < p_off else 1
-
     def _add_psf_2d(self, x, y, n_photons):
         nx = self.nxh * 2
         ny = self.nyh * 2
@@ -244,21 +219,21 @@ class NLSIM:
         ny = self.nyh * 2
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
         for m in range(self.number_of_fluorophores):
-            if self.sw[m]:
-                I_off = 0.5 * (1 + np.cos(
-                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[
-                        indices[1]]))
-                self.sw[m] = self.sw[m] * self._off_probability(I_off * self.pw_off, self.expo_off)
-                if self.sw[m]:
-                    I_read = 0.5 * (1 + np.cos(
-                        self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
-                    self.sw[m] = self.sw[m] * self._off_probability(I_read * self.pw_read, self.expo_read)
-                    if rd.random() < self.qy:
-                        self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
-                                                                                                            self.yps[m],
-                                                                                                            self.I * I_read)
-            if self.sw[m] == 0:
-                self.sw[m] = self._on_probability(self.pw_act, self.expo_act)
+            I_off = 0.5 * (1 + np.cos(
+                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[indices[1]]))
+            I_read = 0.5 * (1 + np.cos(
+                self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
+            switching_pulse = phs.ModulatedLasers(wavelengths=[488, 488],
+                                                  power_densities=[I_off, I_read],
+                                                  pulse_widths=[1, 1],
+                                                  t_start=[0, 2],
+                                                  dwell_time=4)
+            switching_experiment = phs.Experiment(illumination=switching_pulse, fluorophore=self.rsEGFP2_on_state)
+            fluo_populations = switching_experiment.solve_kinetics(0.01)
+            emint = np.trapezoid(fluo_populations, dx=0.01)
+            self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
+                                                                                                self.yps[m],
+                                                                                                self.I * emint)
         self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(
             self.out[indices[0] * self.number_of_phases + indices[1], :, :])
         return 'done', 'angle', indices[0], 'phase', indices[1]
