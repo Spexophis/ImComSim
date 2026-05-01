@@ -138,10 +138,13 @@ class SIM_RECON:
         wimgf0 = otf * imgf0
         wimgf1 = otf0 * imgf
         msk = (np.abs(otf0 * otf) > cutoff).astype(np.complex64)
+        denom = np.sum(msk * wimgf0 * wimgf0.conj())
+        if denom.real == 0:
+            return np.nan, np.nan
         if verbose:
             tf.imshow(np.abs((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())))
             tf.imshow(np.angle((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())))
-        a = np.sum(msk * wimgf1 * wimgf0.conj()) / np.sum(msk * wimgf0 * wimgf0.conj())
+        a = np.sum(msk * wimgf1 * wimgf0.conj()) / denom
         return np.abs(a), np.angle(a)
 
     def map_overlap_1st(self, nps=10, r_ang=0.02, r_sp=0.008, verbose=False):
@@ -229,10 +232,13 @@ class SIM_RECON:
         wimgf0 = otf * imgf0
         wimgf1 = otf0 * imgf
         msk = (np.abs(otf0 * otf) > cutoff).astype(np.complex64)
+        denom = np.sum(msk * wimgf0 * wimgf0.conj())
+        if denom.real == 0:
+            return np.nan, np.nan
         if verbose:
             tf.imshow(np.abs((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())))
             tf.imshow(np.angle((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())))
-        a = np.sum(msk * wimgf1 * wimgf0.conj()) / np.sum(msk * wimgf0 * wimgf0.conj())
+        a = np.sum(msk * wimgf1 * wimgf0.conj()) / denom
         return np.abs(a), np.angle(a)
 
     def map_overlap_2nd(self, nps=10, r_ang=0.02, r_sp=0.008, verbose=False):
