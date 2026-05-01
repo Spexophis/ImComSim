@@ -4,12 +4,16 @@ Ruizhe Lin
 2024-01-11
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from pylab import imshow, subplot, subplots, figure, colorbar
-from scipy.special import factorial
 from scipy.fft import fft2 as _fft2, ifft2 as _ifft2, fftshift
 import numpy as np
 import tifffile as tf
 from skimage.filters import window
+import psf_generator as pg
 
 _WORKERS = -1
 
@@ -44,7 +48,10 @@ class SIM_RECON:
         self.dx = dx / self.ratio
         self.nx = nx * self.ratio
         self.ny = ny * self.ratio
-        self.psf, self.radius = self.get_psf()
+        _psf_obj = pg.PSF(wl=self.wl, na=self.na, dx=self.dx, nx=self.nx)
+        _psf_obj.flat_wavefront()
+        self.psf = _psf_obj.get_2d_psf((0, 0, 0))
+        self.radius = _psf_obj.radius
         self.xv, self.yv = self.meshgrid()
         self.sep_mat = self.sepmatrix()
         self.mu = 0.08
@@ -61,25 +68,6 @@ class SIM_RECON:
         self.spacings = {i: {'first': self.sps[i]} for i in range(self.nang)}
         self.magnitudes = {i: {'first': 0.8} for i in range(self.nang)}
         self.phases = {i: {'first': 0} for i in range(self.nang)}
-
-    def _get_pupil(self, zarr=None):
-        dp = 1 / (self.nx * self.dx)
-        radius = (self.na / self.wl) / dp
-        msk = self._shift(self._disc_array(shape=(self.nx, self.ny), radius=radius)) / np.sqrt(np.pi * radius ** 2) / (
-            self.nx)
-        phi = np.zeros((self.nx, self.ny))
-        wf = msk * np.exp(1j * phi).astype(np.complex64)
-        if zarr is not None:
-            for z in range(len(zarr)):
-                n, m = self._zernike_j_nm(z + 1)
-                phi += zarr[z] * self._zernike(n, m, radius=radius, shape=(self.nxh * 2, self.nyh * 2))
-            wf *= np.exp(1j * phi).astype(np.complex64)
-        return wf, radius
-
-    def get_psf(self, zernike_arr=None):
-        bpp, radius = self._get_pupil(zernike_arr)
-        psf1 = np.abs((fft2(fftshift(bpp)))) ** 2
-        return psf1 / psf1.sum(), radius
 
     def meshgrid(self):
         x = np.arange(-self.nx / 2, self.nx / 2)
@@ -299,80 +287,6 @@ class SIM_RECON:
         arrf = fft2(arr)
         arro = np.pad(fftshift(arrf), ((px, px), (py, py)), 'constant', constant_values=0)
         return ifft2(fftshift(arro))
-
-    @staticmethod
-    def _image_grid_polar(x, y):
-        return np.sqrt(x ** 2 + y ** 2), np.arctan2(y, x)
-
-    @staticmethod
-    def _disc_array(shape=(128, 128), radius=64, origin=None):
-        nx, ny = shape
-        x = np.linspace(-nx / 2, nx / 2 - 1, nx)
-        y = np.linspace(-ny / 2, ny / 2 - 1, ny)
-        X, Y = np.meshgrid(x, y, sparse=True)
-        disc = (X ** 2 + Y ** 2) < radius ** 2
-        if origin is not None:
-            s0 = origin[0] - int(nx / 2)
-            s1 = origin[1] - int(ny / 2)
-            disc = np.roll(np.roll(disc, int(s0), 0), int(s1), 1)
-        return disc
-
-    @staticmethod
-    def _radial_array(shape=(128, 128), f=None, origin=None):
-        nx, ny = shape[0], shape[1]
-        x = np.linspace(-nx / 2, nx / 2 - 1, nx)
-        y = np.linspace(-ny / 2, ny / 2 - 1, ny)
-        X, Y = np.meshgrid(x, y, sparse=True)
-        rarr = f(np.sqrt(X ** 2 + Y ** 2))
-        if origin is not None:
-            s0 = origin[0] - nx / 2
-            s1 = origin[1] - ny / 2
-            rarr = np.roll(np.roll(rarr, int(s0), 0), int(s1), 1)
-        return rarr
-
-    @staticmethod
-    def _shift(arr, shifts=None):
-        if shifts is None:
-            shifts = np.array(arr.shape) / 2
-        if len(arr.shape) == len(shifts):
-            for m, p in enumerate(shifts):
-                arr = np.roll(arr, int(p), m)
-        return arr
-
-    @staticmethod
-    def _zernike_j_nm(j):
-        if j < 1:
-            raise ValueError("j must be a positive integer")
-        n = 0
-        while j > n:
-            n += 1
-            j -= n
-        m = -2 * j + n
-        if n % 2 == 0:
-            m = -m
-        return n, m
-
-    def _zernike(self, n, m, radius=64, shape=(128, 128), origin=None):
-        if (n < 0) or (n < abs(m)) or (n % 2 != abs(m) % 2):
-            raise ValueError("n and m are not valid Zernike indices")
-        if m < 0:
-            return ((-1) ** ((n - abs(m)) / 2)) * self._zernike(n, -m, radius, shape, origin)
-        # Compute the polynomial.
-        nx, ny = shape
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx) / radius
-        y = np.linspace(-oy, oy - 1, ny) / radius
-        xv, yv = np.meshgrid(x, y)
-        rho, phi = self._image_grid_polar(xv, yv)
-        kmax = int((n - abs(m)) / 2)
-        summation = 0
-        for k in range(kmax + 1):
-            summation += ((-1) ** k * factorial(n - k) /
-                          (factorial(k) * factorial(0.5 * (n + abs(m)) - k) *
-                           factorial(0.5 * (n - abs(m)) - k)) *
-                          rho ** (n - 2 * k))
-        return summation * np.cos(m * phi) * self._disc_array(shape, radius)
 
 
 if __name__ == '__main__':
