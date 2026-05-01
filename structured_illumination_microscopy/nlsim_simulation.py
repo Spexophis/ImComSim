@@ -4,15 +4,18 @@ Ruizhe Lin
 2024-01-12
 """
 
-import concurrent.futures
+import sys
 import time
+import concurrent.futures
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import numpy.random as rd
 import tifffile as tf
-from scipy.special import factorial
 
 import photophysics_simulator as phs
+import psf_generator as pg
 
 
 class NLSIM:
@@ -47,6 +50,7 @@ class NLSIM:
         self.expo_off = 0.8
         self.expo_read = 1.0
         self.qy = 0.65
+        self._psf_obj = None
         self.rsEGFP2_on_state = phs.NegativeSwitchers(extincion_coeff_on=[5260, 51560],
                                                       extincion_coeff_off=[22000, 60],
                                                       wavelength=[405, 488],
@@ -73,76 +77,56 @@ class NLSIM:
         return number_of_dots, coords_x, coords_y, coords_z
 
     def get_line_objects(self, number_of_lines):
-        number_of_fluorophores_per_line = np.random.randint(256, 1024, number_of_lines)
+        counts = np.random.randint(256, 1024, number_of_lines)
         x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_lines) + 0.1)
         z_start = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_lines) - 0.4)
         z_end = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_lines))
-        coords_x = np.array([])
-        coords_y = np.array([])
-        coords_z = np.array([])
-        for i in range(number_of_lines):
-            coords_x = np.concatenate((coords_x, np.linspace(x_start[i], x_end[i], number_of_fluorophores_per_line[i])))
-            coords_y = np.concatenate((coords_y, np.linspace(y_start[i], y_end[i], number_of_fluorophores_per_line[i])))
-            coords_z = np.concatenate((coords_z, np.linspace(z_start[i], z_end[i], number_of_fluorophores_per_line[i])))
-        return number_of_fluorophores_per_line.sum(), coords_x, coords_y, coords_z
+        coords_x = np.concatenate([np.linspace(x_start[i], x_end[i], counts[i]) for i in range(number_of_lines)])
+        coords_y = np.concatenate([np.linspace(y_start[i], y_end[i], counts[i]) for i in range(number_of_lines)])
+        coords_z = np.concatenate([np.linspace(z_start[i], z_end[i], counts[i]) for i in range(number_of_lines)])
+        return counts.sum(), coords_x, coords_y, coords_z
 
     def get_polynomial_objects(self, number_of_polynomials):
-        number_of_fluorophores_per_polynomial = np.random.randint(256, 1024, number_of_polynomials)
-        coords_x = np.array([])
-        coords_y = np.array([])
-        coords_z = np.array([])
+        counts = np.random.randint(256, 1024, number_of_polynomials)
         x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
         y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
         x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
         y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_polynomials) + 0.1)
         z_start = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_polynomials) - 0.4)
         z_end = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_polynomials))
+        xs, ys, zs = [], [], []
         for i in range(number_of_polynomials):
             degrees = np.random.randint(2, 8, 3)
             poly_x = np.poly1d(np.random.uniform(-1, 1, size=(degrees[0] + 1)))
             poly_y = np.poly1d(np.random.uniform(-1, 1, size=(degrees[1] + 1)))
             poly_z = np.poly1d(np.random.uniform(-1, 1, size=(degrees[2] + 1)))
-            t = np.linspace(-1, 1, number_of_fluorophores_per_polynomial[i])
-            x = poly_x(t)
-            y = poly_y(t)
-            z = poly_z(t)
-            x = self.normalize(x, (x_start[i], x_end[i]))
-            y = self.normalize(y, (y_start[i], y_end[i]))
-            z = self.normalize(z, (z_start[i], z_end[i]))
-            coords_x = np.concatenate((coords_x, x))
-            coords_y = np.concatenate((coords_y, y))
-            coords_z = np.concatenate((coords_z, z))
-        return number_of_fluorophores_per_polynomial.sum(), coords_x, coords_y, coords_z
+            t = np.linspace(-1, 1, counts[i])
+            xs.append(self.normalize(poly_x(t), (x_start[i], x_end[i])))
+            ys.append(self.normalize(poly_y(t), (y_start[i], y_end[i])))
+            zs.append(self.normalize(poly_z(t), (z_start[i], z_end[i])))
+        return counts.sum(), np.concatenate(xs), np.concatenate(ys), np.concatenate(zs)
 
     def get_curve_objects(self, number_of_curves):
-        number_of_fluorophores_per_curve = np.random.randint(128, 512, number_of_curves)
-        coords_x = np.array([])
-        coords_y = np.array([])
-        coords_z = np.array([])
+        counts = np.random.randint(128, 512, number_of_curves)
         x_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_curves) + 0.1)
         y_start = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_curves) + 0.1)
         x_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_curves) + 0.1)
         y_end = (self.dx * self.nxh * 2) * (0.8 * np.random.rand(number_of_curves) + 0.1)
         z_start = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_curves) - 0.4)
         z_end = (self.dz * self.nzh * 2) * (0.4 * np.random.rand(number_of_curves))
+        xs, ys, zs = [], [], []
         for c in range(number_of_curves):
             num_coeffs = np.random.randint(2, 8)
             coeffs = np.random.uniform(-1, 1, (3, num_coeffs))
             phases = np.random.uniform(0, 2 * np.pi, (3, num_coeffs))
-            t = np.linspace(0, 2 * np.pi, number_of_fluorophores_per_curve[c])
-            x = self.fc(t, coeffs[0], phases[0])
-            y = self.fc(t, coeffs[1], phases[1])
-            z = self.fc(t, coeffs[2], phases[2])
-            x = self.normalize(x, (x_start[c], x_end[c]))
-            y = self.normalize(y, (y_start[c], y_end[c]))
-            z = self.normalize(z, (z_start[c], z_end[c]))
-            coords_x = np.concatenate((coords_x, x))
-            coords_y = np.concatenate((coords_y, y))
-            coords_z = np.concatenate((coords_z, z))
-        return number_of_fluorophores_per_curve.sum(), coords_x, coords_y, coords_z
+            t = np.linspace(0, 2 * np.pi, counts[c])
+            xs.append(self.normalize(self.fc(t, coeffs[0], phases[0]), (x_start[c], x_end[c])))
+            ys.append(self.normalize(self.fc(t, coeffs[1], phases[1]), (y_start[c], y_end[c])))
+            zs.append(self.normalize(self.fc(t, coeffs[2], phases[2]), (z_start[c], z_end[c])))
+        return counts.sum(), np.concatenate(xs), np.concatenate(ys), np.concatenate(zs)
 
     @staticmethod
     def fc(t, cs, phase):
@@ -150,12 +134,11 @@ class NLSIM:
 
     @staticmethod
     def normalize(coord, range_):
-        r = np.max(coord) - np.min(coord)
+        lo, hi = np.min(coord), np.max(coord)
+        r = hi - lo
         if r == 0:
             return np.full(coord.shape, (range_[1] + range_[0]) / 2)
-        else:
-            return (coord - np.min(coord)) / (np.max(coord) - np.min(coord)) * np.abs(range_[1] - range_[0]) + np.min(
-                range_)
+        return (coord - lo) / r * np.abs(range_[1] - range_[0]) + np.min(range_)
 
     def get_objects(self, number_of_dots=None, number_of_lines=None, number_of_polynomials=None, number_of_curves=None):
         if number_of_dots is not None:
@@ -185,17 +168,12 @@ class NLSIM:
         self.sw = np.ones(self.number_of_fluorophores)
 
     def get_pupil(self, zarr=None):
-        dp = 1 / (self.nxh * 2 * self.dx)
-        radius = (self.na / self.wl) / dp
-        msk = self._shift(self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius)) / np.sqrt(
-            np.pi * radius ** 2) / (self.nxh * 2)
-        phi = np.zeros((self.nxh * 2, self.nyh * 2))
-        self.wf = msk * np.exp(1j * phi).astype(np.complex64)
-        if zarr is not None:
-            for z in range(len(zarr)):
-                n, m = self._zernike_j_nm(z + 1)
-                phi += zarr[z] * self._zernike(n, m, radius=radius, shape=(self.nxh * 2, self.nyh * 2))
-            self.wf *= np.exp(1j * phi).astype(np.complex64)
+        nx = self.nxh * 2
+        self._psf_obj = pg.PSF(wl=self.wl, na=self.na, n2=self.n2, dx=self.dx, nx=nx)
+        if zarr is None:
+            self._psf_obj.flat_wavefront()
+        else:
+            self._psf_obj.aberration_wavefront(zarr)
 
     def _on_probability(self, pw=0.5, expo=1.0):
         on_switching_pulse = phs.ModulatedLasers(wavelengths=[405, 488], power_densities=[pw, 0.0],
@@ -214,54 +192,34 @@ class NLSIM:
         return 0 if rd.random() < p_off else 1
 
     def _add_psf_2d(self, x, y, n_photons):
+        psf_dist = self._psf_obj.get_2d_psf((x, y, 0))
         nx = self.nxh * 2
-        ny = self.nyh * 2
-        alpha = 2 * np.pi / nx / self.dx
-        gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
-        ph = self._shift(np.fromfunction(gxy, (nx, ny), dtype=np.float32))
-        wfp = ph * self.wf
-        psf_dist = np.abs(np.fft.fft2(wfp)) ** 2
-        psf_dist /= psf_dist.sum()
-        psf_img = self._generate_photon_distributions(int(n_photons), psf_dist)
-        return psf_img
+        return np.random.multinomial(int(n_photons), psf_dist.ravel()).reshape(nx, nx)
 
-    def _generate_photon_distributions(self, n, distribution_map):
-        flat_distribution = distribution_map.flatten()
-        indices = np.random.choice(np.arange(len(flat_distribution)), size=n, p=flat_distribution)
-        distributions = np.column_stack(np.unravel_index(indices, distribution_map.shape))
-        counts = self._count_photons(distributions)
-        return counts
-
-    def _count_photons(self, points):
-        counts = np.zeros((self.nxh * 2, self.nyh * 2), dtype=int)
-        for point in points:
-            x, y = point
-            counts[x, y] += 1
-        return counts
+    def _add_psf_3d(self, x, y, z, I):
+        return I * self._psf_obj.get_2d_psf((x, y, z))
 
     def _get_one_img_2d(self, indices):
-        nx = self.nxh * 2
-        ny = self.nyh * 2
-        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = self.cam_offset + np.zeros((nx, ny))
+        ang, ph_idx = indices
+        out_idx = ang * self.number_of_phases + ph_idx
+        self.out[out_idx] = self.cam_offset
+        # Precompute illumination for all fluorophores before the sequential sw-update loop
+        phi_m = self.kx[ang] * self.xps + self.ky[ang] * self.yps
+        phase_val = self.phase[ph_idx]
+        I_off_arr = 0.5 * (1 + np.cos(phi_m + np.pi + phase_val))
+        I_read_arr = 0.5 * (1 + np.cos(phi_m + phase_val))
         for m in range(self.number_of_fluorophores):
             if self.sw[m]:
-                I_off = 0.5 * (1 + np.cos(
-                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + np.pi + self.phase[
-                        indices[1]]))
-                self.sw[m] = self.sw[m] * self._off_probability(I_off * self.pw_off, self.expo_off)
+                self.sw[m] *= self._off_probability(I_off_arr[m] * self.pw_off, self.expo_off)
                 if self.sw[m]:
-                    I_read = 0.5 * (1 + np.cos(
-                        self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + self.phase[indices[1]]))
-                    self.sw[m] = self.sw[m] * self._off_probability(I_read * self.pw_read, self.expo_read)
+                    self.sw[m] *= self._off_probability(I_read_arr[m] * self.pw_read, self.expo_read)
                     if rd.random() < self.qy:
-                        self.out[indices[0] * self.number_of_phases + indices[1], :, :] += self._add_psf_2d(self.xps[m],
-                                                                                                            self.yps[m],
-                                                                                                            self.I * I_read)
+                        self.out[out_idx] += self._add_psf_2d(self.xps[m], self.yps[m],
+                                                               self.I * I_read_arr[m])
             if self.sw[m] == 0:
                 self.sw[m] = self._on_probability(self.pw_act, self.expo_act)
-        self.out[indices[0] * self.number_of_phases + indices[1], :, :] = rd.poisson(
-            self.out[indices[0] * self.number_of_phases + indices[1], :, :])
-        return 'done', 'angle', indices[0], 'phase', indices[1]
+        self.out[out_idx] = rd.poisson(self.out[out_idx])
+        return 'done', 'angle', ang, 'phase', ph_idx
 
     def nlsim_2d(self, nang=7, nph=7, I=1600, parallel=True):
         nx = self.nxh * 2
@@ -295,60 +253,25 @@ class NLSIM:
                              'wavelength': self.wl, 'numerical aperture': self.na,
                              'pattern spacing': self.sp})
 
-    def _add_psf_3d(self, x, y, z, I):
-        nx = self.nxh * 2
-        ny = self.nyh * 2
-        alpha = 2 * np.pi / nx / self.dx
-        gxy = lambda m, n: np.exp(1j * alpha * (m * x + n * y)).astype(np.complex64)
-        ph = self._shift(np.fromfunction(gxy, (nx, ny), dtype=np.float32))
-        df = np.exp(1j * self._focus_mode(z)).astype(np.complex64)
-        wfp = np.sqrt(I) * ph * df * self.wf
-        return np.abs(np.fft.fft2(wfp)) ** 2
-
-    def _focus_mode(self, w=0):  # wavefront phase for focusing
-        """ focus mode, d is depth in microns, nap is num. ap.
-        focuses, with depth correction """
-        na = self.na
-        n2 = self.n2
-        wl = self.wl
-        if na > n2:
-            raise "Numerical aperture cannot be greater than n2!"
-        dp = 1 / (self.nxh * 2 * self.dx)
-        radius = (self.na / self.wl) / dp
-        sinphim = na / n2
-        msk = self._disc_array(shape=(self.nxh * 2, self.nyh * 2), radius=radius, origin=(0, 0))
-        rho = msk * self._radial_array(shape=(self.nxh * 2, self.nyh * 2), f=lambda x: x, origin=(0, 0)) / radius
-        return 2 * np.pi * msk * n2 * w * np.sqrt(1 - (sinphim * rho) ** 2) / wl
-
     def _get_one_img_3d(self, indices):
-        nx = self.nxh * 2
-        ny = self.nyh * 2
         nz = self.nzh * 2
-        self.out[indices[0], indices[1], :, :, :] = self.cam_offset + np.zeros((nz, nx, ny))
+        ang, ph_idx = indices
+        self.out[ang, ph_idx] = self.cam_offset
+        # Precompute xy-phase terms (independent of z-plane) for all fluorophores
+        phi_m = self.kx[ang] * self.xps + self.ky[ang] * self.yps
+        phase_val = self.phase[ph_idx]
+        cs2xy = np.cos(phi_m + 2 * phase_val)          # (n_fluor,)
+        csxy = np.cos(0.5 * phi_m + phase_val)         # (n_fluor,)
         for zp in range(nz):
             zplane = self.dz * (zp - self.focal_plane)
+            csz = np.cos(self.kz * (self.zps - zplane))  # (n_fluor,) — only z-term changes
+            illumination = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
             for m in range(self.number_of_fluorophores):
-                cs2xy = np.cos(
-                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + 2 * self.phase[
-                        indices[1]])
-                csxy = np.cos(
-                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + self.phase[
-                        indices[1]])
-                csz = np.cos(self.kz * (self.zps[m] - zplane))
-                I_off = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
-                sw = self._off_probability(I_off)
-                cs2xy = np.cos(
-                    self.kx[indices[0]] * self.xps[m] + self.ky[indices[0]] * self.yps[m] + 2 * self.phase[
-                        indices[1]])
-                csxy = np.cos(
-                    0.5 * self.kx[indices[0]] * self.xps[m] + 0.5 * self.ky[indices[0]] * self.yps[m] + self.phase[
-                        indices[1]])
-                csz = np.cos(self.kz * (self.zps[m] - zplane))
-                I_read = self.I * (3 + 2 * cs2xy + 4 * csz * csxy)
-                self.out[indices[0], indices[1], zp, :, :] += sw * self._add_psf_3d(self.xps[m], self.yps[m],
-                                                                                    self.zps[m] - zplane, I_read)
-        self.out[indices[0], indices[1], :, :, :] = rd.poisson(self.out[indices[0], indices[1], :, :, :])
-        return 'done', 'angle', indices[0], 'phase', indices[1]
+                sw = self._off_probability(illumination[m])
+                self.out[ang, ph_idx, zp] += sw * self._add_psf_3d(
+                    self.xps[m], self.yps[m], self.zps[m] - zplane, illumination[m])
+        self.out[ang, ph_idx] = rd.poisson(self.out[ang, ph_idx])
+        return 'done', 'angle', ang, 'phase', ph_idx
 
     def nlsim_3d(self, nang=3, nph=5, I=1000, parallel=True):
         nx = self.nxh * 2
@@ -385,93 +308,12 @@ class NLSIM:
                              'wavelength': self.wl, 'numerical aperture': self.na,
                              'pattern spacing': self.sp})
 
-    @staticmethod
-    def _image_grid_polar(x, y):
-        return np.sqrt(x ** 2 + y ** 2), np.arctan2(y, x)
-
-    @staticmethod
-    def _disc_array(shape=(128, 128), radius=64, origin=None):
-        nx, ny = shape
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx)
-        y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
-        disc = (rho < radius)
-        if not origin is None:
-            s0 = origin[0] - int(nx / 2)
-            s1 = origin[1] - int(ny / 2)
-            disc = np.roll(np.roll(disc, int(s0), 0), int(s1), 1)
-        return disc
-
-    @staticmethod
-    def _radial_array(shape=(128, 128), f=None, origin=None):
-        nx = shape[0]
-        ny = shape[1]
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx)
-        y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
-        rarr = f(rho)
-        if not origin is None:
-            s0 = origin[0] - nx / 2
-            s1 = origin[1] - ny / 2
-            rarr = np.roll(np.roll(rarr, int(s0), 0), int(s1), 1)
-        return rarr
-
-    @staticmethod
-    def _shift(arr, shifts=None):
-        if shifts is None:
-            shifts = np.array(arr.shape) / 2
-        if len(arr.shape) == len(shifts):
-            for m, p in enumerate(shifts):
-                arr = np.roll(arr, int(p), m)
-        return arr
-
-    @staticmethod
-    def _zernike_j_nm(j):
-        if j < 1:
-            raise ValueError("j must be a positive integer")
-        n = 0
-        while j > n:
-            n += 1
-            j -= n
-        m = -2 * j + n
-        if n % 2 == 0:
-            m = -m
-        return n, m
-
-    def _zernike(self, n, m, radius=64, shape=(128, 128), origin=None):
-        if (n < 0) or (n < abs(m)) or (n % 2 != abs(m) % 2):
-            raise ValueError("n and m are not valid Zernike indices")
-        if m < 0:
-            return ((-1) ** ((n - abs(m)) / 2)) * self._zernike(n, -m, radius, shape, origin)
-        # Compute the polynomial.
-        nx, ny = shape
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx) / radius
-        y = np.linspace(-oy, oy - 1, ny) / radius
-        xv, yv = np.meshgrid(x, y)
-        rho, phi = self._image_grid_polar(xv, yv)
-        kmax = int((n - abs(m)) / 2)
-        summation = 0
-        for k in range(kmax + 1):
-            summation += ((-1) ** k * factorial(n - k) /
-                          (factorial(k) * factorial(0.5 * (n + abs(m)) - k) *
-                           factorial(0.5 * (n - abs(m)) - k)) *
-                          rho ** (n - 2 * k))
-        return summation * np.cos(m * phi) * self._disc_array(shape, radius)
-
 
 if __name__ == '__main__':
     s = NLSIM()
     s.get_objects(1024, 6, 6, 6)
     s.get_pupil()
-    # s._get_pupil(zarr=[0., 0., 0, 1.])
+    # s.get_pupil(zarr=[0., 0., 0, 1.])
     s.nlsim_2d(parallel=True)
     s.save_result_2d()
     # s.nlsim_3d()
