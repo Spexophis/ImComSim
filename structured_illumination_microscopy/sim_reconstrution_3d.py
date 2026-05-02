@@ -292,10 +292,10 @@ class SIM_RECON:
         k, l = np.where(magarr == magarr.max())
         angmax = k[0] * d_ang - r_ang + angle
         spmax = l[0] * d_sp - r_sp + spacing
-        self.angles[self.ang_ind]["first"] = angmax
-        self.lateral_spacings[self.ang_ind]["first"] = spmax
-        self.magnitudes[self.ang_ind]["first"] = magarr[k, l][0]
-        self.phases[self.ang_ind]["first"] = pharr[k, l][0]
+        self.angles[self.ang_ind]["second"] = angmax
+        self.lateral_spacings[self.ang_ind]["second"] = spmax
+        self.magnitudes[self.ang_ind]["second"] = magarr[k, l][0]
+        self.phases[self.ang_ind]["second"] = pharr[k, l][0]
 
     def shift_0(self, verbose=False):
         # zero_suppression always returns 1; store results in memory instead of disk
