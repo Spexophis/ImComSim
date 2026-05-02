@@ -14,6 +14,7 @@ import numpy as np
 from scipy import signal
 from scipy.fft import fftn as _fftn, ifftn as _ifftn, fft2 as _fft2, ifft2 as _ifft2, fftshift
 import psf_generator as pg
+import pupil_wavefront_modulator as pwm
 
 _WORKERS = -1
 
@@ -69,9 +70,7 @@ class SIM_RECON:
         self.axy = 0.8
         self.az = 0.8
         self.zoa = 10e-2
-        _psf_obj = pg.PSF(wl=self.wl, na=self.na, n2=self.n2, dx=self.dx, nx=self.nx)
-        _psf_obj.flat_wavefront()
-        self.psf = _psf_obj.get_3d_psf((0, 0, 0), -2.56, 2.56, self.dz)
+        self.psf = self.get_psf()
         self.zv, self.xv, self.yv = self.meshgrid()
         self.sep_mat = self.sepmatrix()
         self.winf = self.window(self.eta)
@@ -108,6 +107,33 @@ class SIM_RECON:
             sepmat[2 * order - 1, :] = 2 * np.cos(2 * np.pi * j_arr * order / nphases) / nphases
             sepmat[2 * order, :] = 2 * np.sin(2 * np.pi * j_arr * order / nphases) / nphases
         return np.linalg.inv(np.transpose(sepmat))
+
+    def get_psf(self, axial=None, zernike_arr=None):
+        """Generate 3-D PSF stack via psf_generator.PSF.
+
+        Aberrations are specified as a sequence of Noll-ordered Zernike
+        coefficients (1-based) handled by PupilWavefrontModulator.  Assign
+        psf_obj.bpp directly so both flat and aberrated paths go through a
+        single code route.
+
+        Parameters
+        ----------
+        axial       : (start, stop, step) in µm.  Defaults to (-2.56, 2.56, dz).
+        zernike_arr : sequence of Zernike coefficients [rad], 1-based Noll order.
+                      zernike_arr[0] = j=1 (piston), zernike_arr[3] = j=4 (defocus), …
+        """
+        if axial is None:
+            axial = (-2.56, 2.56, self.dz)
+        start, stop, step = axial
+        psf_obj = pg.PSF(wl=self.wl, na=self.na, n2=self.n2, dx=self.dx, nx=self.nx)
+        if zernike_arr is None:
+            psf_obj.flat_wavefront()
+        else:
+            mod = pwm.PupilWavefrontModulator(
+                zernike_coeffs={j + 1: float(c) for j, c in enumerate(zernike_arr)}
+            )
+            psf_obj.bpp = mod.to_psf_wavefront(nx=psf_obj.nx, radius=psf_obj.radius)
+        return psf_obj.get_3d_psf((0, 0, 0), start, stop, step)
 
     def separate(self, ang_ind=0):
         self.ang_ind = ang_ind
@@ -172,7 +198,6 @@ class SIM_RECON:
             imshow(magarr, interpolation='nearest')
             subplot(212)
             imshow(pharr, interpolation='nearest')
-        # get maximum
         k, l = np.where(magarr == magarr.max())
         angmax = k[0] * d_ang - r_ang + angle
         spmax = l[0] * d_sp - r_sp + spacing
@@ -189,7 +214,6 @@ class SIM_RECON:
         # zero_suppression always returns 1 — skip the argmax fftn entirely
         ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv + kz * self.zv))
         otf = fftn(self.psf * ysh)
-
         ysh = self.shift_mat(0., kx, ky).astype(np.complex64)
         imgf = fftn(self.img_1_p * ysh)
         return (np.abs(imgf * otf) ** 2).sum()
@@ -265,7 +289,6 @@ class SIM_RECON:
             imshow(magarr, interpolation='nearest')
             subplot(212)
             imshow(pharr, interpolation='nearest')
-        # get maximum
         k, l = np.where(magarr == magarr.max())
         angmax = k[0] * d_ang - r_ang + angle
         spmax = l[0] * d_sp - r_sp + spacing
@@ -410,7 +433,7 @@ class SIM_RECON:
 
 
 if __name__ == '__main__':
-    img = tf.imread(r"C:\Users\Ruiz\Documents\GitHub\ImComSim\structured_illumination_microscopy\202602062331_sim3d_simulation_image_stack.tif")
+    img = tf.imread(r"202602062331_sim3d_simulation_image_stack.tif")
     p = SIM_RECON(image_stack=img,
                   image_pixel_size=(0.08, 0.16),
                   numerical_aperture=1.4,
