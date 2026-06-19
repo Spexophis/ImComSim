@@ -1,7 +1,3 @@
-# -*- coding: utf-8 -*-
-# Copyright (c) 2025 Ruizhe Lin
-# Licensed under the MIT License.
-
 """
 Angular and radial Fourier-Bessel decomposition of image FFT.
 
@@ -42,6 +38,7 @@ def angular_decomposition_full(F_centred, freq_x, freq_y, nu_max, n_modes=8, n_r
     ms     : (2*n_modes+1,) int
     meta   : dict
     """
+
     fx, fy  = np.meshgrid(freq_x, freq_y)
     fq      = np.sqrt(fx**2 + fy**2)
     phi     = np.arctan2(fy, fx)           # [-π, π]
@@ -60,8 +57,6 @@ def angular_decomposition_full(F_centred, freq_x, freq_y, nu_max, n_modes=8, n_r
             continue
         phi_r = phi[ring]
         F_r   = F_centred[ring]
-        # FIX: vectorise inner loop — one matrix op replaces n_ms scalar ops
-        # exp_terms shape: (n_ms, n_pixels_in_ring)
         exp_terms = np.exp(-1j * ms[:, None] * phi_r[None, :])
         Fm[:, ri] = (F_r[None, :] * exp_terms).mean(axis=1)
 
@@ -159,7 +154,7 @@ def compute_otf_from_wavefront(a20, a40, a60=0.0,
     Numerically compute the radially averaged OTF from Zernike coefficients
     via 2D pupil autocorrelation.
 
-    Returns q_grid [0, nu_max] and otf_rad (real, normalised).
+    Returns q_grid [0, nu_max] and otf_rad (real, normalized).
     """
     rho = np.linspace(0, 1, n_pupil)
     W   = _pupil_phase(rho, a20, a40, a60)
@@ -300,8 +295,9 @@ def phase_polynomial_fit(F0_complex, q_grid, nu_max):
 
 def _fft_setup(image, pixel_size, NA, wavelength):
     """Shared FFT + pupil-mask setup used by all run_* functions."""
-    nu_max = NA / wavelength           # cyc/µm  (incoherent cutoff = NA/λ)
+    nu_max = 2 * NA / wavelength           # cyc/µm  (incoherent cutoff = NA/λ)
     H, W   = image.shape
+    image = image - image.min()
     F_full = np.fft.fftshift(np.fft.fft2(image.astype(np.float64)))
     freq_x = np.fft.fftshift(np.fft.fftfreq(W, d=pixel_size))
     freq_y = np.fft.fftshift(np.fft.fftfreq(H, d=pixel_size))
@@ -329,7 +325,6 @@ def run_angular_analysis(image, pixel_size, NA, wavelength, n_modes=8, n_rbins=1
     nu_max, F_full, F, freq_x, freq_y = _fft_setup(image, pixel_size, NA, wavelength)
     q_grid, Fm, ms, meta = angular_decomposition_full(
         F, freq_x, freq_y, nu_max, n_modes=n_modes, n_rbins=n_rbins)
-    # FIX: compute_aberration_indices takes only (meta) — removed spurious nu_max arg
     indices = compute_aberration_indices(meta)
     if verbose:
         _print_angular(indices, nu_max)
@@ -801,7 +796,6 @@ if __name__ == '__main__':
                run_angular_analysis(images[1], pixel_size, NA, wavelength, n_modes=8, n_rbins=160, verbose=True),
                run_angular_analysis(images[2], pixel_size, NA, wavelength, n_modes=8, n_rbins=160, verbose=True)]
     
-    m = 2
     trucs = [40, 120]
     
     plt.figure()
