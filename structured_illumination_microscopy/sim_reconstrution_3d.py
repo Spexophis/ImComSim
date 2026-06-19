@@ -4,18 +4,34 @@ Ruizhe Lin
 2024-01-12
 """
 
-import os
-
-temppath = r'C:\Users\Ruiz\Documents\GitHub\ImComSim\structured_illumination_microscopy\temp'
-join = lambda fn: os.path.join(temppath, fn)
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tifffile as tf
 from pylab import imshow, subplot, figure, plot
 import numpy as np
-from scipy.special import factorial
 from scipy import signal
-# from cupyfft import fftn, ifftn
-from numpy.fft import fftshift, fft2, ifft2, fftn, ifftn
+from scipy.fft import fftn as _fftn, ifftn as _ifftn, fft2 as _fft2, ifft2 as _ifft2, fftshift
+import psf_generator as pg
+
+_WORKERS = -1
+
+
+def fftn(a):
+    return _fftn(a, workers=_WORKERS)
+
+
+def ifftn(a):
+    return _ifftn(a, workers=_WORKERS)
+
+
+def fft2(a):
+    return _fft2(a, workers=_WORKERS)
+
+
+def ifft2(a):
+    return _ifft2(a, workers=_WORKERS)
 
 
 class SIM_RECON:
@@ -53,14 +69,16 @@ class SIM_RECON:
         self.axy = 0.8
         self.az = 0.8
         self.zoa = 10e-2
-        self.psf = self.get_psf()
+        _psf_obj = pg.PSF(wl=self.wl, na=self.na, n2=self.n2, dx=self.dx, nx=self.nx)
+        _psf_obj.flat_wavefront()
+        self.psf = _psf_obj.get_3d_psf((0, 0, 0), -self.nzh * self.dz, self.nzh * self.dz, self.dz)
         self.zv, self.xv, self.yv = self.meshgrid()
         self.sep_mat = self.sepmatrix()
         self.winf = self.window(self.eta)
         self.apd = self.apod()
         # parameters
         self.angles = {i: {'first': self.angs[i], 'second': self.angs[i]} for i in range(self.nang)}
-        self.lateral_spacings = {i: {'first': self.sps[i], 'second': self.sps[i] / 2} for i in range(self.nang)}
+        self.lateral_spacings = {i: {'first': self.sps[i] * 2, 'second': self.sps[i]} for i in range(self.nang)}
         self.axial_spacings = {i: {'first': self.spz[i]} for i in range(self.nang)}
         self.magnitudes = {i: {'first': 0.8, 'second': 0.4} for i in range(self.nang)}
         self.phases = {i: {'first': 0, 'second': 0} for i in range(self.nang)}
@@ -84,46 +102,12 @@ class SIM_RECON:
         nphases = self.nph
         norders = int((self.norders + 1) / 2)
         sepmat = np.zeros((self.norders, nphases), dtype=np.float32)
-        for j in range(nphases):
-            sepmat[0, j] = 1.0
-            for order in range(1, norders):
-                sepmat[2 * order - 1, j] = 2 * np.cos(2 * np.pi * (j * order) / nphases) / nphases
-                sepmat[2 * order, j] = 2 * np.sin(2 * np.pi * (j * order) / nphases) / nphases
+        j_arr = np.arange(nphases)
+        sepmat[0, :] = 1.0
+        for order in range(1, norders):
+            sepmat[2 * order - 1, :] = 2 * np.cos(2 * np.pi * j_arr * order / nphases) / nphases
+            sepmat[2 * order, :] = 2 * np.sin(2 * np.pi * j_arr * order / nphases) / nphases
         return np.linalg.inv(np.transpose(sepmat))
-
-    def _get_pupil(self, zarr=None):
-        msk = self._shift(self._disc_array(shape=(self.nx, self.ny), radius=self.radius_xy)) / np.sqrt(
-            np.pi * self.radius_xy ** 2) / self.nx
-        phi = np.zeros((self.nx, self.ny))
-        wf = msk * np.exp(1j * phi).astype(np.complex64)
-        if zarr is not None:
-            for z in range(len(zarr)):
-                n, m = self._zernike_j_nm(z + 1)
-                phi += zarr[z] * self._zernike(n, m, radius=self.radius_xy, shape=(self.nx, self.ny))
-            wf *= np.exp(1j * phi).astype(np.complex64)
-        return wf
-
-    def _focus_mode(self, depth=0.):
-        x = np.arange(-self.nxh, self.nxh)
-        xv, yv = np.meshgrid(x, x)
-        rho = np.sqrt(xv ** 2 + yv ** 2) / self.radius_xy
-        msk = (rho <= 1.0).astype(np.float64)
-        return msk * (self.n2 * depth / self.wl) * np.sqrt(1 - (self.na * msk * rho / self.n2) ** 2)
-
-    def get_psf(self, axial=(-2.56, 2.56, 0.08), zernike_arr=None):
-        bpp = self._get_pupil(zernike_arr)
-        start, stop, step = axial
-        nsteps = int((stop - start) / step + 1)
-        zarr = np.linspace(start / step, stop / step, nsteps).astype(np.int64)
-        zarr = zarr[0:nsteps - 1]
-        zarr = np.roll(zarr, int((nsteps - 1) / 2))
-        stack = np.zeros((nsteps - 1, self.nx, self.ny))
-        for m, z in enumerate(zarr):
-            d = z * step
-            ph = self._focus_mode(d)
-            wf = bpp * np.exp(2j * np.pi * ph)
-            stack[m] = np.abs(fft2(fftshift(wf))) ** 2
-        return stack / stack.sum()
 
     def separate(self, ang_ind=0):
         self.ang_ind = ang_ind
@@ -142,22 +126,11 @@ class SIM_RECON:
         ky = self.dx * np.sin(angle) / (spacingx * 2)
         kz = self.dz / spacingz
 
+        # zero_suppression always returns 1 — skip the argmax fftn entirely
         ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv + kz * self.zv))
-        otf = fftn((self.psf * ysh))
-        yshf = np.abs(fftn(ysh))
-        sz, sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < self.nxh:
-            sx = sx
-        else:
-            sx = sx - self.nx
-        if sy < self.nyh:
-            sy = sy
-        else:
-            sy = sy - self.ny
-        zsp = self.zero_suppression(sz, sx, sy)
-        otf = otf * zsp
+        otf = fftn(self.psf * ysh)
         ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv + 0. * self.zv))
-        imgf = fftn((self.img_1_p * ysh))
+        imgf = fftn(self.img_1_p * ysh)
 
         cutoff = self.cutoff
         imgf0 = self.imgf_0
@@ -165,10 +138,13 @@ class SIM_RECON:
         wimgf0 = otf * imgf0
         wimgf1 = otf0 * imgf
         msk = (np.abs(otf0 * otf) > cutoff).astype(np.complex64)
+        denom = np.sum(msk * wimgf0 * wimgf0.conj())
+        if denom.real == 0:
+            return np.nan, np.nan
         if verbose:
-            tf.imshow(np.abs((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())))
-            tf.imshow(np.angle((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())))
-        a = np.sum(msk * wimgf1 * wimgf0.conj()) / np.sum(msk * wimgf0 * wimgf0.conj())
+            tf.imshow(np.fft.fftshift(np.abs((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj()))))
+            tf.imshow(np.fft.fftshift(np.angle((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj()))))
+        a = np.sum(msk * wimgf1 * wimgf0.conj()) / denom
         return np.abs(a), np.angle(a)
 
     def map_overlap_1st(self, nps=10, r_ang=0.02, r_sp=0.008, verbose=False):
@@ -210,27 +186,16 @@ class SIM_RECON:
         ky = self.dx * np.sin(angle) / (spacingx * 2)
         kz = self.dz / spacingz
 
+        # zero_suppression always returns 1 — skip the argmax fftn entirely
         ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv + kz * self.zv))
-        otf = fftn((self.psf * ysh))
-        yshf = np.abs(fftn(ysh))
-        sz, sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < self.nxh:
-            sx = sx
-        else:
-            sx = sx - self.nx
-        if sy < self.nyh:
-            sy = sy
-        else:
-            sy = sy - self.ny
-        zsp = self.zero_suppression(sz, sx, sy)
-        otf = otf * zsp
+        otf = fftn(self.psf * ysh)
 
         ysh = self.shift_mat(0., kx, ky).astype(np.complex64)
-        imgf = fftn((self.img_1_p * ysh))
+        imgf = fftn(self.img_1_p * ysh)
         return (np.abs(imgf * otf) ** 2).sum()
 
     def map_overlap_z(self, nps=10, r_spz=0.1, verbose=False):
-        angle = self.angles[self.ang_ind]["first"]
+        angle = self.angles[self.ang_ind]["second"]
         spacing = self.lateral_spacings[self.ang_ind]["first"]
         spz = self.axial_spacings[self.ang_ind]["first"]
         d_spz = 2 * r_spz / nps
@@ -255,23 +220,10 @@ class SIM_RECON:
     def get_overlap_2nd(self, angle, spacingx, verbose=False):
         kx = self.dx * np.cos(angle) / spacingx
         ky = self.dx * np.sin(angle) / spacingx
-        kz = 0
 
-        ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv + kz * self.zv))
+        # zero_suppression always returns 1 — skip the argmax fftn entirely
+        ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv))
         otf = fftn(self.psf * ysh)
-        yshf = np.abs(fftn(ysh))
-        sz, sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < self.nxh:
-            sx = sx
-        else:
-            sx = sx - self.nx
-        if sy < self.nyh:
-            sy = sy
-        else:
-            sy = sy - self.ny
-        zsp = self.zero_suppression(sz, sx, sy)
-        otf = otf * zsp
-
         imgf = fftn(self.img_2_p * ysh)
 
         cutoff = self.cutoff
@@ -280,10 +232,13 @@ class SIM_RECON:
         wimgf0 = otf * imgf0
         wimgf1 = otf0 * imgf
         msk = (np.abs(otf0 * otf) > cutoff).astype(np.complex64)
+        denom = np.sum(msk * wimgf0 * wimgf0.conj())
+        if denom.real == 0:
+            return np.nan, np.nan
         if verbose:
-            tf.imshow(np.abs((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())))
-            tf.imshow(np.angle((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())))
-        a = np.sum(msk * wimgf1 * wimgf0.conj()) / np.sum(msk * wimgf0 * wimgf0.conj())
+            tf.imshow(np.fft.fftshift(np.abs((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj()))))
+            tf.imshow(np.fft.fftshift(np.angle((msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj()))))
+        a = np.sum(msk * wimgf1 * wimgf0.conj()) / denom
         return np.abs(a), np.angle(a)
 
     def map_overlap_2nd(self, nps=10, r_ang=0.02, r_sp=0.008, verbose=False):
@@ -314,19 +269,15 @@ class SIM_RECON:
         k, l = np.where(magarr == magarr.max())
         angmax = k[0] * d_ang - r_ang + angle
         spmax = l[0] * d_sp - r_sp + spacing
-        self.angles[self.ang_ind]["first"] = angmax
-        self.lateral_spacings[self.ang_ind]["first"] = spmax
-        self.magnitudes[self.ang_ind]["first"] = magarr[k, l][0]
-        self.phases[self.ang_ind]["first"] = pharr[k, l][0]
+        self.angles[self.ang_ind]["second"] = angmax
+        self.lateral_spacings[self.ang_ind]["second"] = spmax
+        self.magnitudes[self.ang_ind]["second"] = magarr[k, l][0]
+        self.phases[self.ang_ind]["second"] = pharr[k, l][0]
 
     def shift_0(self, verbose=False):
-        self.otf_0 = np.zeros((self.nz, self.nx, self.ny), dtype=np.complex64)
-        zsp = self.zero_suppression(0., 0., 0.)
-        self.otf_0 = fftn(self.psf) * zsp
-        self.imgf_0 = np.zeros((self.nz, self.nx, self.ny), dtype=np.complex64)
+        # zero_suppression always returns 1; store results in memory instead of disk
+        self.otf_0 = fftn(self.psf)
         self.imgf_0 = fftn(self.img_0)
-        tf.imwrite(join('otf_0.tif'), self.otf_0)
-        tf.imwrite(join('imgf_0.tif'), self.imgf_0)
         if verbose:
             tf.imshow(np.abs(fftshift(self.otf_0)), photometric='minisblack',
                       title='Angle %d _ 0 order OTF' % self.ang_ind)
@@ -341,59 +292,30 @@ class SIM_RECON:
         ky = self.dx * np.sin(angle) / (spacingx * 2)
         kz = self.dz / spz
 
-        ysh = np.zeros((2, self.nz, self.nx, self.ny), dtype=np.complex64)
-        ysh[0] = self.shift_mat(kz, kx, ky).astype(np.complex64)
-        ysh[1] = self.shift_mat(kz, -kx, -ky).astype(np.complex64)
+        # zero_suppression always returns 1 — skip all argmax fftn calls
+        ysh_pos = self.shift_mat(kz, kx, ky).astype(np.complex64)
+        ysh_neg = self.shift_mat(kz, -kx, -ky).astype(np.complex64)
 
-        otf = fftn((self.psf * ysh[0]))
-        yshf = np.abs(fftn(ysh[0]))
-        sz, sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < self.nxh:
-            sx = sx
-        else:
-            sx = sx - self.nx
-        if sy < self.nyh:
-            sy = sy
-        else:
-            sy = sy - self.ny
-        zsp = self.zero_suppression(sz, sx, sy)
-        otf = otf * zsp
-        tf.imwrite(join('otf_1_p.tif'), otf)
+        self.otf_1_p = fftn(self.psf * ysh_pos)
         if verbose:
-            tf.imshow(np.abs(fftshift(otf)), photometric='minisblack',
+            tf.imshow(np.abs(fftshift(self.otf_1_p)), photometric='minisblack',
                       title='Angle %d _ 1st order +1 OTF' % self.ang_ind)
 
-        otf = fftn((self.psf * ysh[1]))
-        yshf = np.abs(fftn(ysh[1]))
-        sz, sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < self.nxh:
-            sx = sx
-        else:
-            sx = sx - self.nx
-        if sy < self.nyh:
-            sy = sy
-        else:
-            sy = sy - self.ny
-        zsp = self.zero_suppression(sz, sx, sy)
-        otf = otf * zsp
-        tf.imwrite(join('otf_1_n.tif'), otf)
+        self.otf_1_n = fftn(self.psf * ysh_neg)
         if verbose:
-            tf.imshow(np.abs(fftshift(otf)), photometric='minisblack',
+            tf.imshow(np.abs(fftshift(self.otf_1_n)), photometric='minisblack',
                       title='Angle %d _ 1st order -1 OTF' % self.ang_ind)
 
-        ysh = np.zeros((2, self.nz, self.nx, self.ny), dtype=np.complex64)
-        ysh[0] = self.shift_mat(0, kx, ky).astype(np.complex64)
-        ysh[1] = self.shift_mat(0, -kx, -ky).astype(np.complex64)
+        ysh_pos_xy = self.shift_mat(0, kx, ky).astype(np.complex64)
+        ysh_neg_xy = self.shift_mat(0, -kx, -ky).astype(np.complex64)
 
-        imgf = fftn(self.img_1_p * ysh[0])
-        tf.imwrite(join('imgf_1_p.tif'), imgf)
+        self.imgf_1_p = fftn(self.img_1_p * ysh_pos_xy)
         if verbose:
-            tf.imshow(np.abs(fftshift(imgf)), photometric='minisblack',
+            tf.imshow(np.abs(fftshift(self.imgf_1_p)), photometric='minisblack',
                       title='Angle %d _ 1st order +1 frequency spectrum' % self.ang_ind)
-        imgf = fftn(self.img_1_n * ysh[1])
-        tf.imwrite(join('imgf_1_n.tif'), imgf)
+        self.imgf_1_n = fftn(self.img_1_n * ysh_neg_xy)
         if verbose:
-            tf.imshow(np.abs(fftshift(imgf)), photometric='minisblack',
+            tf.imshow(np.abs(fftshift(self.imgf_1_n)), photometric='minisblack',
                       title='Angle %d _ 1st order -1 frequency spectrum' % self.ang_ind)
 
     def shift_2nd(self, verbose=False):
@@ -402,110 +324,47 @@ class SIM_RECON:
         kx = self.dx * np.cos(angle) / spacing
         ky = self.dx * np.sin(angle) / spacing
 
-        ysh = np.zeros((2, self.nz, self.nx, self.ny), dtype=np.complex64)
-        ysh[0] = self.shift_mat(0., kx, ky).astype(np.complex64)
-        ysh[1] = self.shift_mat(0., -kx, -ky).astype(np.complex64)
+        # zero_suppression always returns 1 — skip all argmax fftn calls
+        ysh_pos = self.shift_mat(0., kx, ky).astype(np.complex64)
+        ysh_neg = self.shift_mat(0., -kx, -ky).astype(np.complex64)
 
-        otf = fftn(self.psf * ysh[0])
-        yshf = np.abs(fftn(ysh[0]))
-        sz, sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < self.nxh:
-            sx = sx
-        else:
-            sx = sx - self.nx
-        if sy < self.nyh:
-            sy = sy
-        else:
-            sy = sy - self.ny
-        zsp = self.zero_suppression(sz, sx, sy)
-        otf = otf * zsp
-        tf.imwrite(join('otf_2_p.tif'), otf)
+        self.otf_2_p = fftn(self.psf * ysh_pos)
         if verbose:
-            tf.imshow(np.abs(fftshift(otf)), photometric='minisblack',
+            tf.imshow(np.abs(fftshift(self.otf_2_p)), photometric='minisblack',
                       title='Angle %d _ 2nd order +1 OTF' % self.ang_ind)
 
-        otf = fftn(self.psf * ysh[1])
-        yshf = np.abs(fftn(ysh[1]))
-        sz, sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < self.nxh:
-            sx = sx
-        else:
-            sx = sx - self.nx
-        if sy < self.nyh:
-            sy = sy
-        else:
-            sy = sy - self.ny
-        zsp = self.zero_suppression(sz, sx, sy)
-        otf = otf * zsp
-        tf.imwrite(join('otf_2_n.tif'), otf)
+        self.otf_2_n = fftn(self.psf * ysh_neg)
         if verbose:
-            tf.imshow(np.abs(fftshift(otf)), photometric='minisblack',
+            tf.imshow(np.abs(fftshift(self.otf_2_n)), photometric='minisblack',
                       title='Angle %d _ 2nd order -1 OTF' % self.ang_ind)
 
-        imgf = fftn(self.img_2_p * ysh[0])
-        tf.imwrite(join('imgf_2_p.tif'), imgf)
+        self.imgf_2_p = fftn(self.img_2_p * ysh_pos)
         if verbose:
-            tf.imshow(np.abs(fftshift(imgf)), photometric='minisblack',
+            tf.imshow(np.abs(fftshift(self.imgf_2_p)), photometric='minisblack',
                       title='Angle %d _ 2nd order +1 frequency spectrum' % self.ang_ind)
-        imgf = fftn(self.img_2_n * ysh[1])
-        tf.imwrite(join('imgf_2_n.tif'), imgf)
+        self.imgf_2_n = fftn(self.img_2_n * ysh_neg)
         if verbose:
-            tf.imshow(np.abs(fftshift(imgf)), photometric='minisblack',
+            tf.imshow(np.abs(fftshift(self.imgf_2_n)), photometric='minisblack',
                       title='Angle %d _ 2nd order -1 frequency spectrum' % self.ang_ind)
 
     def recon_one(self, ang=0):
         ph1 = self.magnitudes[ang]['first'] * np.exp(1j * self.phases[ang]['first'])
         ph2 = self.magnitudes[ang]['second'] * np.exp(1j * self.phases[ang]['second'])
-        # 0th order
-        imgf = tf.imread(join('imgf_0.tif'))
-        tf.imwrite('angle%d_imgf_0.tif' % self.ang_ind, np.abs(np.fft.fftshift(imgf)).astype(np.float32),
-                   photometric='minisblack')
-        otf = tf.imread(join('otf_0.tif'))
-        tf.imwrite('angle%d_otf_0.tif' % self.ang_ind, np.abs(np.fft.fftshift(otf)).astype(np.float32),
-                   photometric='minisblack')
-        self.Snum += self.zoa * otf.conj() * imgf
-        self.Sden += np.abs(otf) ** 2
-        # +1st order
-        imgf = tf.imread(join('imgf_1_p.tif'))
-        tf.imwrite('angle%d_imgf_1_p.tif' % self.ang_ind, np.abs(np.fft.fftshift(imgf)).astype(np.float32),
-                   photometric='minisblack')
-        otf = tf.imread(join('otf_1_p.tif'))
-        tf.imwrite('angle%d_otf_1_p.tif' % self.ang_ind, np.abs(np.fft.fftshift(otf)).astype(np.float32),
-                   photometric='minisblack')
-        self.Snum += ph1 * otf.conj() * imgf
-        self.Sden += np.abs(otf) ** 2
-        # -1 order
-        imgf = tf.imread(join('imgf_1_n.tif'))
-        tf.imwrite('angle%d_imgf_1_n.tif' % self.ang_ind, np.abs(np.fft.fftshift(imgf)).astype(np.float32),
-                   photometric='minisblack')
-        otf = tf.imread(join('otf_1_n.tif'))
-        tf.imwrite('angle%d_otf_1_n.tif' % self.ang_ind, np.abs(np.fft.fftshift(otf)).astype(np.float32),
-                   photometric='minisblack')
-        self.Snum += ph1.conj() * otf.conj() * imgf
-        self.Sden += np.abs(otf) ** 2
-        # +2nd order
-        imgf = tf.imread(join('imgf_2_p.tif'))
-        tf.imwrite('angle%d_imgf_2_p.tif' % self.ang_ind, np.abs(np.fft.fftshift(imgf)).astype(np.float32),
-                   photometric='minisblack')
-        otf = tf.imread(join('otf_2_p.tif'))
-        tf.imwrite('angle%d_otf_2_p.tif' % self.ang_ind, np.abs(np.fft.fftshift(otf)).astype(np.float32),
-                   photometric='minisblack')
-        self.Snum += ph2 * otf.conj() * imgf
-        self.Sden += np.abs(otf) ** 2
-        # -2nd order
-        imgf = tf.imread(join('imgf_2_n.tif'))
-        tf.imwrite('angle%d_imgf_2_n.tif' % self.ang_ind, np.abs(np.fft.fftshift(imgf)).astype(np.float32),
-                   photometric='minisblack')
-        otf = tf.imread(join('otf_2_n.tif'))
-        tf.imwrite('angle%d_otf_2_n.tif' % self.ang_ind, np.abs(np.fft.fftshift(otf)).astype(np.float32),
-                   photometric='minisblack')
-        self.Snum += ph2.conj() * otf.conj() * imgf
-        self.Sden += np.abs(otf) ** 2
+        # Use in-memory attributes set by shift_0 / shift_1st / shift_2nd
+        self.Snum += self.zoa * self.otf_0.conj() * self.imgf_0
+        self.Sden += self.otf_0.real ** 2 + self.otf_0.imag ** 2
+        self.Snum += ph1 * self.otf_1_p.conj() * self.imgf_1_p
+        self.Sden += self.otf_1_p.real ** 2 + self.otf_1_p.imag ** 2
+        self.Snum += ph1.conj() * self.otf_1_n.conj() * self.imgf_1_n
+        self.Sden += self.otf_1_n.real ** 2 + self.otf_1_n.imag ** 2
+        self.Snum += ph2 * self.otf_2_p.conj() * self.imgf_2_p
+        self.Sden += self.otf_2_p.real ** 2 + self.otf_2_p.imag ** 2
+        self.Snum += ph2.conj() * self.otf_2_n.conj() * self.imgf_2_n
+        self.Sden += self.otf_2_n.real ** 2 + self.otf_2_n.imag ** 2
 
     def recon_all(self):
         self.Snum = np.zeros((self.nz, self.nx, self.ny), dtype=np.complex64)
-        self.Sden = np.zeros((self.nz, self.nx, self.ny), dtype=np.complex64)
-        self.Sden += self.mu ** 2
+        self.Sden = np.full((self.nz, self.nx, self.ny), self.mu ** 2, dtype=np.complex64)
         for i in range(3):
             self.separate(i)
             self.shift_0()
@@ -520,29 +379,13 @@ class SIM_RECON:
         tf.imwrite(fn + 'sim3d_effective_OTF.tif', np.abs(fftshift(self.S)).astype(np.float32), photometric='minisblack')
 
     def zero_suppression(self, sz, sx, sy):
-        x = self.xv
-        y = self.yv
-        z = self.zv
-        g = 1 - self.strength * np.exp(
-            -((x - sx) ** 2. + (y - sy) ** 2. + 0. * (z - sz) ** 2.) / (2. * self.sigma ** 2.))
-        g[g < 0.5] = 0.0
-        g[g >= 0.5] = 1.0
-        g = 1
-        return g
+        return 1
 
     def window(self, eta):
-        nz = self.nz
-        nx = self.nx
-        ny = self.ny
-        wd = np.zeros((nz, nx, ny))
-        wind = signal.windows.tukey(nx, alpha=eta, sym=True)
-        wz = signal.windows.tukey(nz, alpha=eta, sym=True)
-        wx = np.tile(wind, (nx, 1))
-        wy = wx.swapaxes(0, 1)
-        w = wx * wy
-        for i in range(nz):
-            wd[i, :, :, ] = w * wz[i]
-        return wd
+        wind = signal.windows.tukey(self.nx, alpha=eta, sym=True)
+        wz = signal.windows.tukey(self.nz, alpha=eta, sym=True)
+        # Broadcasting replaces the Python loop over z-planes
+        return wz[:, np.newaxis, np.newaxis] * np.outer(wind, wind)[np.newaxis, :, :]
 
     def apod(self):
         rxy = 2. * self.radius_xy
@@ -553,9 +396,7 @@ class SIM_RECON:
         rhz = np.sqrt(0. * self.xv ** 2 + 0. * self.yv ** 2 + self.zv ** 2) / rz
         msk_xy = (rhxy <= 1.0).astype(np.float64)
         msk_z = (rhz <= 1.0).astype(np.float64)
-        msk = msk_xy * msk_z
-        apodiz = apo * msk
-        return apodiz
+        return apo * msk_xy * msk_z
 
     @staticmethod
     def _interp(arr, ratio=2):
@@ -564,94 +405,12 @@ class SIM_RECON:
         py = int((ny * (ratio - 1)) / 2)
         pz = int((nz * (ratio - 1)) / 2)
         arrf = fftn(arr)
-        arro = np.pad(np.fft.fftshift(arrf), ((pz, pz), (px, px), (py, py)), 'constant', constant_values=0)
-        out = ifftn(np.fft.fftshift(arro))
-        return out
-
-    @staticmethod
-    def _image_grid_polar(x, y):
-        return np.sqrt(x ** 2 + y ** 2), np.arctan2(y, x)
-
-    @staticmethod
-    def _disc_array(shape=(128, 128), radius=64, origin=None):
-        nx, ny = shape
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx)
-        y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
-        disc = (rho < radius)
-        if not origin is None:
-            s0 = origin[0] - int(nx / 2)
-            s1 = origin[1] - int(ny / 2)
-            disc = np.roll(np.roll(disc, int(s0), 0), int(s1), 1)
-        return disc
-
-    @staticmethod
-    def _radial_array(shape=(128, 128), f=None, origin=None):
-        nx = shape[0]
-        ny = shape[1]
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx)
-        y = np.linspace(-oy, oy - 1, ny)
-        X, Y = np.meshgrid(x, y)
-        rho = np.sqrt(X ** 2 + Y ** 2)
-        rarr = f(rho)
-        if not origin is None:
-            s0 = origin[0] - nx / 2
-            s1 = origin[1] - ny / 2
-            rarr = np.roll(np.roll(rarr, int(s0), 0), int(s1), 1)
-        return rarr
-
-    @staticmethod
-    def _shift(arr, shifts=None):
-        if shifts is None:
-            shifts = np.array(arr.shape) / 2
-        if len(arr.shape) == len(shifts):
-            for m, p in enumerate(shifts):
-                arr = np.roll(arr, int(p), m)
-        return arr
-
-    @staticmethod
-    def _zernike_j_nm(j):
-        if j < 1:
-            raise ValueError("j must be a positive integer")
-        n = 0
-        while j > n:
-            n += 1
-            j -= n
-        m = -2 * j + n
-        if n % 2 == 0:
-            m = -m
-        return n, m
-
-    def _zernike(self, n, m, radius=64, shape=(128, 128), origin=None):
-        if (n < 0) or (n < abs(m)) or (n % 2 != abs(m) % 2):
-            raise ValueError("n and m are not valid Zernike indices")
-        if m < 0:
-            return ((-1) ** ((n - abs(m)) / 2)) * self._zernike(n, -m, radius, shape, origin)
-        # Compute the polynomial.
-        nx, ny = shape
-        ox = nx / 2
-        oy = ny / 2
-        x = np.linspace(-ox, ox - 1, nx) / radius
-        y = np.linspace(-oy, oy - 1, ny) / radius
-        xv, yv = np.meshgrid(x, y)
-        rho, phi = self._image_grid_polar(xv, yv)
-        kmax = int((n - abs(m)) / 2)
-        summation = 0
-        for k in range(kmax + 1):
-            summation += ((-1) ** k * factorial(n - k) /
-                          (factorial(k) * factorial(0.5 * (n + abs(m)) - k) *
-                           factorial(0.5 * (n - abs(m)) - k)) *
-                          rho ** (n - 2 * k))
-        return summation * np.cos(m * phi) * self._disc_array(shape, radius)
+        arro = np.pad(fftshift(arrf), ((pz, pz), (px, px), (py, py)), 'constant', constant_values=0)
+        return ifftn(fftshift(arro))
 
 
 if __name__ == '__main__':
-    img = tf.imread(r"C:\Users\Ruiz\Documents\GitHub\ImComSim\structured_illumination_microscopy\202602062331_sim3d_simulation_image_stack.tif")
+    img = tf.imread(r"sim3d_simulation_image_stack.tif")
     p = SIM_RECON(image_stack=img,
                   image_pixel_size=(0.08, 0.16),
                   numerical_aperture=1.4,
@@ -664,11 +423,8 @@ if __name__ == '__main__':
     for i in range(3):
         p.separate(i)
         p.shift_0()
-        # p.map_overlap_2nd(nps=4, r_ang=0.02, r_sp=0.02)
         p.map_overlap_2nd(nps=10, r_ang=0.005, r_sp=0.005)
-        # p.map_overlap_2nd(nps=10, r_ang=0.005, r_sp=0.005)
         p.map_overlap_z(nps=50, r_spz=0.25)
         p.map_overlap_1st(nps=10, r_ang=0.005, r_sp=0.005)
-        # p.map_overlap_1st(nps=10, r_ang=0.005, r_sp=0.005)
     p.recon_all()
     p.save_reconstruction()

@@ -5,12 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "arviz>=1.1.0",
     "diffractio>=0.2.4",
     "matplotlib>=3.10.8",
     "numexpr>=2.14.1",
     "numpy>=2.4.4",
+    "opencv-python>=4.13.0.92",
+    "openpyxl>=3.1.5",
     "pandas>=3.0.2",
     "pyfftw>=0.15.1",
+    "pymc>=6.0.1",
     "scikit-image>=0.26.0",
     "scikit-learn>=1.8.0",
     "scipy>=1.17.1",

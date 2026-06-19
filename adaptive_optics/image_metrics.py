@@ -843,18 +843,10 @@ def run_pipeline(image_paths, edge_roi=None):
     )
 
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SECTION 7 — CLI ENTRY POINT
-# ═════════════════════════════════════════════════════════════════════════════
-
-def main():
+if __name__ == "__main__":
     results = run_pipeline(images)
 
     print("\n  SUMMARY")
     print("  " + "─" * 45)
     for k, v in results.items():
         print(f"  {k:25s}: {v}")
-
-
-if __name__ == "__main__":
-    main()

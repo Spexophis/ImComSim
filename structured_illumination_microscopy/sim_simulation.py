@@ -4,10 +4,12 @@ Supports 2D and 3D linear SIM.
 """
 
 import time
-import numpy as np
+
 import numexpr as ne
+import numpy as np
 import tifffile as tf
 from numpy.random import rand, randint, uniform
+
 import psf_generator as pg
 
 TWO_PI = 2 * np.pi
@@ -43,7 +45,6 @@ class SIM:
         self.out = None
         self.cam_offset = 80.0
         self.psf = pg.PSF(wl, na, n2, dx, self.nx)
-
 
     def _rand_xy(self, n):
         return (self.dx * self.nx) * (0.8 * rand(n) + 0.1)
@@ -212,7 +213,7 @@ class SIM:
         I = self.I
 
         dot_2d = dot[np.newaxis, :]  # (1, n_fluor)
-        ph_2d = ph[:, np.newaxis]    # (nph, 1)
+        ph_2d = ph[:, np.newaxis]  # (nph, 1)
         return ne.evaluate('I * 0.5 * (1 + cos(dot_2d + ph_2d))')  # (nph, n_fluor)
 
     def _illumination_3d(self, ang_idx):
@@ -229,14 +230,14 @@ class SIM:
 
         dot = ne.evaluate('kx_a * xps + ky_a * yps')  # (n_fluor,)
 
-        ph = self.phase          # (nph,)
+        ph = self.phase  # (nph,)
         zplane = self._zplane_offsets  # (nz,)
         I = self.I
 
-        dot_3 = dot[np.newaxis, np.newaxis, :]     # (1, 1, n_fluor)
-        ph_3 = ph[:, np.newaxis, np.newaxis]        # (nph, 1, 1)
-        zps_3 = zps[np.newaxis, np.newaxis, :]      # (1, 1, n_fluor)
-        zpl_3 = zplane[np.newaxis, :, np.newaxis]   # (1, nz, 1)
+        dot_3 = dot[np.newaxis, np.newaxis, :]  # (1, 1, n_fluor)
+        ph_3 = ph[:, np.newaxis, np.newaxis]  # (nph, 1, 1)
+        zps_3 = zps[np.newaxis, np.newaxis, :]  # (1, 1, n_fluor)
+        zpl_3 = zplane[np.newaxis, :, np.newaxis]  # (1, nz, 1)
 
         return ne.evaluate(
             'I * (3 + 2 * cos(2 * (0.5 * dot_3 + ph_3)) + 4 * cos(kz * (zps_3 - zpl_3)) * cos(0.5 * dot_3 + ph_3))'
@@ -274,8 +275,8 @@ class SIM:
             #   illum_znp: (nz, nph, n_fluor)  [transpose is a free view]
             #   psfs:      (nz, n_fluor, nx*ny) [already contiguous in this layout]
             #   result:    (nz, nph, nx*ny)
-            illum_znp = illum.transpose(1, 0, 2)          # (nz, nph, n_fluor) — view
-            imgs_znp = np.matmul(illum_znp, psfs)          # (nz, nph, nx*ny)
+            illum_znp = illum.transpose(1, 0, 2)  # (nz, nph, n_fluor) — view
+            imgs_znp = np.matmul(illum_znp, psfs)  # (nz, nph, nx*ny)
             imgs = imgs_znp.transpose(1, 0, 2).reshape(nph, nz, self.nx, self.ny)
 
             block = self.cam_offset + imgs
@@ -296,7 +297,8 @@ class SIM:
         # Vectorized z-plane offsets: replaces list comprehension over range(nz)
         self._zplane_offsets = self.dz * (np.arange(self.nz) - self.focal_plane)
         self.out = np.zeros((nang, nph, self.nz, self.nx, self.ny), dtype=np.float64)
-        print(f"Generating 3D SIM: {nang} angles × {nph} phases × {self.nz} z-planes, {self.number_of_fluorophores} fluorophores")
+        print(
+            f"Generating 3D SIM: {nang} angles × {nph} phases × {self.nz} z-planes, {self.number_of_fluorophores} fluorophores")
         t0 = time.perf_counter()
         self._generate_3d_images()
         print(f"Done in {time.perf_counter() - t0:.2f}s")
@@ -334,5 +336,7 @@ class SIM:
 if __name__ == '__main__':
     s = SIM(nxh=128, nyh=128, nzh=16)
     s.get_objects(256, 2, 2, 2)
-    s.sim_3d()
-    s.save_result_3d()
+    s.sim_2d(nang=3, nph=3, I=1000)
+    s.save_result_2d()
+    # s.sim_3d()
+    # s.save_result_3d()
