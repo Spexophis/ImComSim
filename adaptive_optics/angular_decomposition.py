@@ -297,7 +297,6 @@ def _fft_setup(image, pixel_size, NA, wavelength):
     """Shared FFT + pupil-mask setup used by all run_* functions."""
     nu_max = 2 * NA / wavelength           # cyc/µm  (incoherent cutoff = NA/λ)
     H, W   = image.shape
-    image = image - image.min()
     F_full = np.fft.fftshift(np.fft.fft2(image.astype(np.float64)))
     freq_x = np.fft.fftshift(np.fft.fftfreq(W, d=pixel_size))
     freq_y = np.fft.fftshift(np.fft.fftfreq(H, d=pixel_size))
