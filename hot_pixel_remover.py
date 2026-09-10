@@ -5,9 +5,6 @@ import numpy as np
 import tifffile as tif
 from scipy.ndimage import median_filter, label
 
-# =========================
-# Settings
-# =========================
 
 spatial_size = 3  # 3 or 5
 replace_size = 3  # 3 or 5
@@ -18,10 +15,6 @@ persistence_fraction = 0.40
 
 max_component_size = 4  # keep only isolated/small hot-pixel clusters
 
-
-# =========================
-# Functions
-# =========================
 
 def robust_sigma(x):
     med = np.nanmedian(x)
@@ -70,15 +63,13 @@ def remove_large_components(mask, max_component_size=4):
     return clean
 
 
-def detect_hot_pixels_from_stack(
-        stack,
-        max_detection_frames=300,
-        spatial_size=3,
-        spatial_k=8.0,
-        temporal_k=8.0,
-        persistence_fraction=0.60,
-        max_component_size=4,
-):
+def detect_hot_pixels_from_stack(stack,
+                                 max_detection_frames=300,
+                                 spatial_size=3,
+                                 spatial_k=8.0,
+                                 temporal_k=8.0,
+                                 persistence_fraction=0.60,
+                                 max_component_size=4):
     stack = ensure_tyx(stack)
     sample, used_idx = sample_frames(stack, max_detection_frames)
 
@@ -97,16 +88,10 @@ def detect_hot_pixels_from_stack(
     static_residual = temporal_median - local_median_static
     static_med, static_sigma = robust_sigma(static_residual)
 
-    static_candidates = static_residual > (
-            static_med + spatial_k * static_sigma
-    )
+    static_candidates = static_residual > (static_med + spatial_k * static_sigma)
 
     # Persistence detection frame by frame
-    local_median_stack = median_filter(
-        sample,
-        size=(1, spatial_size, spatial_size),
-        mode="reflect",
-    )
+    local_median_stack = median_filter(sample, size=(1, spatial_size, spatial_size), mode="reflect")
 
     residual_stack = sample - local_median_stack
 
@@ -116,9 +101,7 @@ def detect_hot_pixels_from_stack(
         frame_residual = residual_stack[i]
         med_i, sigma_i = robust_sigma(frame_residual)
 
-        persistent_hits[i] = frame_residual > (
-                med_i + temporal_k * sigma_i
-        )
+        persistent_hits[i] = frame_residual > (med_i + temporal_k * sigma_i)
 
     persistence = persistent_hits.mean(axis=0)
 
@@ -127,10 +110,7 @@ def detect_hot_pixels_from_stack(
     hot_mask = static_candidates & persistent_candidates
 
     # Keep only isolated hot pixels or very small clusters
-    hot_mask = remove_large_components(
-        hot_mask,
-        max_component_size=max_component_size,
-    )
+    hot_mask = remove_large_components(hot_mask, max_component_size=max_component_size)
 
     qc = {
         "temporal_median": temporal_median,
@@ -142,31 +122,22 @@ def detect_hot_pixels_from_stack(
     return hot_mask, qc
 
 
-def detect_hot_pixels_from_dark_stack(
-        dark_stack,
-        spatial_size=3,
-        spatial_k=8.0,
-        max_component_size=4,
-):
+def detect_hot_pixels_from_dark_stack(dark_stack,
+                                      spatial_size=3,
+                                      spatial_k=8.0,
+                                      max_component_size=4):
     dark_stack = ensure_tyx(dark_stack).astype(np.float32)
 
     dark_median = np.median(dark_stack, axis=0)
 
-    local_dark = median_filter(
-        dark_median,
-        size=spatial_size,
-        mode="reflect",
-    )
+    local_dark = median_filter(dark_median, size=spatial_size, mode="reflect")
 
     residual = dark_median - local_dark
     med, sigma = robust_sigma(residual)
 
     hot_mask = residual > (med + spatial_k * sigma)
 
-    hot_mask = remove_large_components(
-        hot_mask,
-        max_component_size=max_component_size,
-    )
+    hot_mask = remove_large_components(hot_mask, max_component_size=max_component_size)
 
     qc = {
         "dark_median": dark_median,
@@ -184,11 +155,7 @@ def correct_hot_pixels(stack, hot_mask, replacement_size=3):
     for t in range(stack.shape[0]):
         frame = stack[t]
 
-        replacement = median_filter(
-            frame,
-            size=replacement_size,
-            mode="reflect",
-        )
+        replacement = median_filter(frame, size=replacement_size, mode="reflect")
 
         out = frame.copy()
         out[hot_mask] = replacement[hot_mask]
@@ -207,9 +174,7 @@ def replace_hot_pixels(stack, hot_mask):
     stack = ensure_tyx(stack)
 
     if hot_mask.shape != stack.shape[1:]:
-        raise ValueError(
-            f"hot_mask shape {hot_mask.shape} does not match image shape {stack.shape[1:]}"
-        )
+        raise ValueError(f"hot_mask shape {hot_mask.shape} does not match image shape {stack.shape[1:]}")
 
     corrected = stack.copy()
 
@@ -219,11 +184,9 @@ def replace_hot_pixels(stack, hot_mask):
         print("No hot pixels found.")
         return corrected
 
-    neighbor_offsets = [
-        (-1, -1), (-1, 0), (-1, 1),
-        (0, -1), (0, 1),
-        (1, -1), (1, 0), (1, 1),
-    ]
+    neighbor_offsets = [(-1, -1), (-1, 0), (-1, 1),
+                        (0, -1), (0, 1),
+                        (1, -1), (1, 0), (1, 1)]
 
     for t in range(stack.shape[0]):
         frame = stack[t]
@@ -234,13 +197,7 @@ def replace_hot_pixels(stack, hot_mask):
         yp = y + 1
         xp = x + 1
 
-        neighbors = np.stack(
-            [
-                padded[yp + dy, xp + dx]
-                for dy, dx in neighbor_offsets
-            ],
-            axis=0,
-        )
+        neighbors = np.stack([padded[yp + dy, xp + dx] for dy, dx in neighbor_offsets], axis=0)
 
         replacement_values = np.median(neighbors, axis=0)
 
@@ -314,25 +271,21 @@ if __name__ == '__main__':
         print("Using dark stack for hot-pixel detection...")
         dark_stack = tif.imread(dark_tif)
 
-        hot_mask, qc = detect_hot_pixels_from_dark_stack(
-            dark_stack,
-            spatial_size=spatial_size,
-            spatial_k=spatial_k,
-            max_component_size=max_component_size,
-        )
+        hot_mask, qc = detect_hot_pixels_from_dark_stack(dark_stack,
+                                                         spatial_size=spatial_size,
+                                                         spatial_k=spatial_k,
+                                                         max_component_size=max_component_size)
 
     else:
         print("Using fluorescence stack itself for hot-pixel detection...")
 
-        hot_mask, qc = detect_hot_pixels_from_stack(
-            stack,
-            max_detection_frames=max_detection_frames,
-            spatial_size=spatial_size,
-            spatial_k=spatial_k,
-            temporal_k=temporal_k,
-            persistence_fraction=persistence_fraction,
-            max_component_size=max_component_size,
-        )
+        hot_mask, qc = detect_hot_pixels_from_stack(stack,
+                                                    max_detection_frames=max_detection_frames,
+                                                    spatial_size=spatial_size,
+                                                    spatial_k=spatial_k,
+                                                    temporal_k=temporal_k,
+                                                    persistence_fraction=persistence_fraction,
+                                                    max_component_size=max_component_size)
 
     n_hot = int(hot_mask.sum())
     total_pixels = hot_mask.size
@@ -341,28 +294,16 @@ if __name__ == '__main__':
     print(f"Fraction of pixels: {100 * n_hot / total_pixels:.5f}%")
 
     print("Correcting stack...")
-    # corrected = correct_hot_pixels(
-    #     stack,
-    #     hot_mask,
-    #     replacement_size=replace_size
-    # )
+    # corrected = correct_hot_pixels(stack, hot_mask, replacement_size=replace_size)
     corrected = replace_hot_pixels(stack, hot_mask)
 
     corrected = corrected.astype(original_dtype, copy=False)
 
-    unchanged = np.array_equal(
-        stack[:, ~hot_mask],
-        corrected[:, ~hot_mask],
-    )
+    unchanged = np.array_equal(stack[:, ~hot_mask], corrected[:, ~hot_mask])
     print("Non-hot pixels unchanged:", unchanged)
 
     print("Saving corrected stack...")
-    tif.imwrite(
-        output_tif,
-        corrected,
-        imagej=True,
-        metadata={"axes": "TYX"},
-    )
+    tif.imwrite(output_tif, corrected, imagej=True, metadata={"axes": "TYX"})
 
     output_prefix = Path(output_tif).with_suffix("")
     tif.imwrite(str(output_prefix) + "_hot_pixel_mask.tif", hot_mask.astype(float))

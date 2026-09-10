@@ -3,7 +3,7 @@ Spatial Resolution Analysis for Fluorescence Microscopy Images
 ==============================================================
 Methods:
   1. Fourier Ring Correlation (FRC) — global resolution estimate via
-     odd/even row half-dataset splitting.
+                                      odd/even row half-dataset splitting.
   2. Rolling FRC (rFRC)   — pixel-level local resolution map via a sliding
                             window FRC.  Requires two independent images of
                             the same field (e.g. odd / even frame split).
@@ -140,7 +140,6 @@ def global_frc_analysis(img: np.ndarray,
 def plot_global_frc(frc_data: dict,
                     pixel_size_nm: float | None,
                     output_path: str) -> None:
-
     unit = "nm" if pixel_size_nm else "px"
     scale = pixel_size_nm if pixel_size_nm else 1.0
 
@@ -159,7 +158,7 @@ def plot_global_frc(frc_data: dict,
         ax.axhline(thresh, color=col, ls="--", lw=1.2, alpha=0.8)
         if res is not None:
             ax.axvline(1 / (res / scale * 2), color=col, ls=":", lw=1.2,
-                        label=f"FRC({lbl}) = {2*res:.1f} {frc_unit}")
+                       label=f"FRC({lbl}) = {2 * res:.1f} {frc_unit}")
     ax.set_xlabel("Spatial frequency (cycles/pixel)")
     ax.set_ylabel("FRC")
     ax.legend(fontsize=8)
@@ -170,6 +169,100 @@ def plot_global_frc(frc_data: dict,
     fig.tight_layout()
     fig.savefig(output_path, dpi=400)
     plt.close(fig)
+
+
+def plot_global_frc_comparison(
+        frc_data_1: dict,
+        frc_data_2: dict,
+        pixel_size_nm: float | None,
+        output_path: str,
+        label_1: str = "Image 1",
+        label_2: str = "Image 2"
+) -> None:
+    unit = "nm" if pixel_size_nm is not None else "px"
+    scale = pixel_size_nm if pixel_size_nm is not None else 1.0
+
+    fig, ax = plt.subplots(figsize=(3, 2), dpi=400)
+
+    datasets = [
+        (frc_data_1, label_1, "steelblue"),
+        (frc_data_2, label_2, "darkorange"),
+    ]
+
+    # Plot the two FRC curves
+    for frc_data, label, color in datasets:
+        freqs = frc_data["freqs"]
+
+        ax.plot(
+            freqs,
+            frc_data["frc"],
+            color=color,
+            alpha=0.25,
+            lw=1
+        )
+        ax.plot(
+            freqs,
+            frc_data["frc_smooth"],
+            color=color,
+            lw=2,
+            label="_nolegend_"
+        )
+
+    threshold_labels = {
+        0.5: "0.5",
+        1 / 7: "1/7"
+    }
+
+    threshold_styles = {
+        0.5: "--",
+        1 / 7: ":"
+    }
+
+    # Plot each threshold once
+    for threshold, threshold_label in threshold_labels.items():
+        ax.axhline(
+            threshold,
+            color="gray",
+            ls=threshold_styles[threshold],
+            lw=1.1,
+            alpha=0.8,
+            # label=f"{threshold_label} threshold"
+        )
+
+    # Plot the resolution crossing for each dataset
+    for frc_data, dataset_label, color in datasets:
+        frc_unit = frc_data.get("unit", unit)
+
+        for threshold, resolution in frc_data["resolutions"].items():
+            if resolution is None:
+                continue
+
+            threshold_label = threshold_labels.get(
+                threshold, f"{threshold:.3f}"
+            )
+
+            crossing_frequency = 1 / (resolution / scale * 2)
+
+            ax.axvline(
+                crossing_frequency,
+                color=color,
+                ls=threshold_styles.get(threshold, "-."),
+                lw=1.2,
+                alpha=0.85,
+                # label=f"{dataset_label}"
+            )
+
+    ax.set_xlabel("Spatial frequency (cycles/pixel)")
+    ax.set_ylabel("FRC")
+    ax.set_xlim(0, 0.5)
+    ax.set_ylim(-0.1, 1.05)
+    ax.grid(alpha=0.25)
+    # ax.legend(fontsize=8, frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=400, bbox_inches="tight")
+    plt.close(fig)
+
 
 # ============================================================================
 # Method 2 — Rolling / sliding-window FRC
