@@ -42,7 +42,7 @@ class PSF:
 
     def _update_derived_params(self):
         self.dp = 1.0 / (self.nx * self.dx)
-        self.radius = (self.na / self.wl) / self.dp
+        self.radius = (2 * self.na / self.wl) / self.dp
         self._grid = None
         self._rho = None
         self._mask = None
