@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "arviz>=1.1.0",
     "diffractio>=0.2.4",
+    "markitdown[all]>=0.1.5",
     "matplotlib>=3.10.8",
     "numexpr>=2.14.1",
     "numpy>=2.4.4",
