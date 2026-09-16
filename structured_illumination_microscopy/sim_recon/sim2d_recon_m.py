@@ -60,14 +60,12 @@ class SIM_RECON:
         self.norders = norders
         self.n, self.nx, self.ny = img_stack.shape
         self.eta = 0.1
-        # caches and scratch space (set up before anything that may use them)
         self.exact_modulation = exact_modulation
         self._tls = threading.local()
         self._zsp_cache = {}
         self._support_cache = {}
         self._sepmat = None
         self.raps = self.raps_stack(img_stack, "tukey", np.float64, True)
-        # self.img = self.sub_bg(img_stack)
         self.img = img_stack.reshape(self.nang, self.nph, self.nx, self.ny).astype(np.float64)
         self.getpsf()
         self.meshgrid()
@@ -81,10 +79,6 @@ class SIM_RECON:
         self.eh = []
 
         self.winf = np.outer(tukey(self.nx * 2, alpha=self.eta), tukey(self.nx * 2, alpha=self.eta)).astype(float)
-
-    # ------------------------------------------------------------------
-    # scratch buffers
-    # ------------------------------------------------------------------
 
     def _scratch(self, name, dtype):
         """Thread-local 2N x 2N buffer.  Buffers are only used for values that
@@ -102,8 +96,6 @@ class SIM_RECON:
         """Drop the scratch buffers of the calling thread (3 x 2N x 2N
         complex128 each) once the overlap search is done."""
         self._tls.buf = {}
-
-    # ------------------------------------------------------------------
 
     def raps_stack(self, stack, window="tukey", dtype=np.float64, verbose=True):
         # no copy: the loop reads ``stack`` and writes into ``buf``
