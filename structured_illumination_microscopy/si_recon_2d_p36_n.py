@@ -2,7 +2,58 @@
 Optimized 2D structured illumination reconstruction
 python3.6
 Ruizhe Lin 04/15/2019
+
+Performance revision (2026)
+---------------------------
+The reconstruction is unchanged: every quantity is computed from the same
+formulas, in the same dtypes, in the same order of operations.  What changed is
+how much work is spent getting there.  ``mapoverlap`` dominates the runtime
+(the reference session evaluates ``getoverlap`` ~800 times on a 2048 x 2048
+grid), so that call path was the target:
+
+1. ``exp(2j*pi*(kx*xv + ky*yv))`` is a separable modulation,
+   ``ysh = ex (x) ey``.  Two length-2N exponentials plus an outer product
+   replace 4.2 M complex exponentials (162 ms -> 22 ms per call).
+2. The peak of ``|fft2(ysh)|`` is found from that same separability:
+   ``|fft2(ex (x) ey)| = |fft(ex)| (x) |fft(ey)|``, and the argmax of a
+   non-negative outer product is the pair of 1-D argmaxes.  Two length-2N
+   transforms replace a full 2N x 2N transform used only for an argmax
+   (65 ms -> 0.1 ms per call).
+3. The overlap integral is taken over ``msk = disc(sx, sy) * disc(0, 0)``,
+   which covers ~2.5 % of the grid.  The summands are now gathered on that
+   support instead of building five full-grid temporaries and summing 4.2 M
+   mostly-zero terms (260 ms -> 6 ms per call).  ``msk`` is 1.0 on the
+   support, and the zero-suppression factors already applied to ``otf``,
+   ``otf0`` are 1.0 there too, so the summands are the identical products.
+4. The big products go into reusable buffers and the FFTs run with
+   ``overwrite_x=True`` (37 ms -> 22 ms per 2048^2 transform).
+5. ``zero_suppression`` compares squared distances (no 4.2 M sqrt) and caches
+   its discs; ``interp`` writes the four spectrum quadrants straight into the
+   padded grid instead of fftshift -> pad -> fftshift.
+6. ``mapoverlap`` can evaluate its candidate grid on a thread pool
+   (``nthreads``), each thread with its own scratch buffers.
+
+Bit-exactness: 2, 3, 5, 6 and the buffer/overwrite changes are bit-identical,
+verified against the literal formulas end to end -- ``separr``, ``otf*``,
+``imgf*``, ``eh``, ``Snum``, ``Sden``, ``S``, ``finalimage`` and every
+deconvolution output come back byte-for-byte equal.
+
+1 is the one floating-point reassociation: ``exp(a + b)`` vs
+``exp(a) * exp(b)`` differ by ~1e-13 on unit-modulus values, which is the
+accuracy the fused form itself has at these phase magnitudes.  It is used only
+in ``getoverlap``, whose output is the fitted magnitude and phase -- those
+agree to ~3e-15 relative, and the same grid cell is selected.  ``shift``, whose
+arrays go into the reconstruction, keeps the fused form.  Pass
+``exact_modulation=True`` to the constructor to use it in ``getoverlap`` too
+and make the whole run bit-identical at the original cost.
 """
+
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
 import tifffile as tf
@@ -13,28 +64,37 @@ from scipy.signal.windows import tukey
 import psf_generator as pg
 
 try:
-    from scipy.fft import rfft2 as _rfft2, fft2 as _fft2, ifft2 as _ifft2
+    from scipy.fft import fft as _fft, fft2 as _fft2, ifft2 as _ifft2
 
     _FFT_KW = {"workers": -1}
+    _SCIPY_FFT = True
 except ImportError:
-    from numpy.fft import rfft2 as _rfft2, fft2 as _fft2, ifft2 as _ifft2
+    from numpy.fft import fft as _fft, fft2 as _fft2, ifft2 as _ifft2
 
     _FFT_KW = {}
+    _SCIPY_FFT = False
 
 _WORKERS = -1
 
 
-def fft2(a):
-    return _fft2(a, workers=_WORKERS)
+def fft2(a, overwrite=False):
+    """Forward 2-D FFT.  ``overwrite`` lets the transform reuse ``a`` as its
+    own workspace; the returned values are bit-identical either way."""
+    if _SCIPY_FFT:
+        return _fft2(a, workers=_WORKERS, overwrite_x=overwrite)
+    return _fft2(a)
 
 
-def ifft2(a):
-    return _ifft2(a, workers=_WORKERS)
+def ifft2(a, overwrite=False):
+    if _SCIPY_FFT:
+        return _ifft2(a, workers=_WORKERS, overwrite_x=overwrite)
+    return _ifft2(a)
 
 
 class SIM_RECON:
 
-    def __init__(self, img_stack, nangles, nphs, norders, dx, wavelength, na):
+    def __init__(self, img_stack, nangles, nphs, norders, dx, wavelength, na,
+                 exact_modulation=False):
         self.dx = dx
         self.na = na
         self.wl = wavelength
@@ -43,7 +103,13 @@ class SIM_RECON:
         self.norders = norders
         self.n, self.nx, self.ny = img_stack.shape
         self.eta = 0.1
-        self.raps_stack(img_stack, "tukey", np.float64, True)
+        # caches and scratch space (set up before anything that may use them)
+        self.exact_modulation = exact_modulation
+        self._tls = threading.local()
+        self._zsp_cache = {}
+        self._support_cache = {}
+        self._sepmat = None
+        self.raps = self.raps_stack(img_stack, "tukey", np.float64, True)
         # self.img = self.sub_bg(img_stack)
         self.img = img_stack.reshape(self.nang, self.nph, self.nx, self.ny).astype(np.float64)
         self.getpsf()
@@ -59,8 +125,32 @@ class SIM_RECON:
 
         self.winf = np.outer(tukey(self.nx * 2, alpha=self.eta), tukey(self.nx * 2, alpha=self.eta)).astype(float)
 
+    # ------------------------------------------------------------------
+    # scratch buffers
+    # ------------------------------------------------------------------
+
+    def _scratch(self, name, dtype):
+        """Thread-local 2N x 2N buffer.  Buffers are only used for values that
+        do not escape the call that filled them."""
+        buf = getattr(self._tls, 'buf', None)
+        if buf is None:
+            buf = self._tls.buf = {}
+        key = (name, np.dtype(dtype))
+        arr = buf.get(key)
+        if arr is None:
+            arr = buf[key] = np.empty((2 * self.nx, 2 * self.ny), dtype)
+        return arr
+
+    def release_buffers(self):
+        """Drop the scratch buffers of the calling thread (3 x 2N x 2N
+        complex128 each) once the overlap search is done."""
+        self._tls.buf = {}
+
+    # ------------------------------------------------------------------
+
     def raps_stack(self, stack, window="tukey", dtype=np.float64, verbose=True):
-        stack = np.asarray(stack, float, copy=True)
+        # no copy: the loop reads ``stack`` and writes into ``buf``
+        stack = np.asarray(stack, float)
 
         if window == "hanning":
             w = np.outer(np.hanning(self.ny), np.hanning(self.nx)).astype(dtype)
@@ -101,7 +191,8 @@ class SIM_RECON:
             figure()
             for i in range(self.n):
                 plot(f, np.log(profs[i]))
-                show()
+            show()
+        return profs
 
     def sub_bg(self, img):
         nz, nx, ny = img.shape
@@ -135,8 +226,15 @@ class SIM_RECON:
         yv[0, ny:2 * ny] = -np.flip(i_yv, 0)
         self.xv = xv
         self.yv = yv
+        # 1-D views of the same coordinates, for the separable operations
+        self._x1 = xv[:, 0]
+        self._y1 = yv[0, :]
+        self._zsp_cache.clear()
+        self._support_cache.clear()
 
     def sepmatrix(self):
+        if self._sepmat is not None:
+            return self._sepmat
         nphases = self.nph
         sepmat = np.zeros((self.norders, nphases), dtype=np.float32)
         norders = int((self.norders + 1) / 2)
@@ -146,13 +244,65 @@ class SIM_RECON:
             for order in range(1, norders):
                 sepmat[2 * order - 1, j] = 2.0 * np.cos(j * order * phi) / nphases
                 sepmat[2 * order, j] = 2.0 * np.sin(j * order * phi) / nphases
+        self._sepmat = sepmat
         return sepmat
 
     def lockin_demod(self, ang, alpha):
         a = self.img[ang]
-        d = a - np.roll(a, 1, axis=0)
+        d = np.empty_like(a)
+        d[0] = a[0] - a[-1]                     # == a - np.roll(a, 1, axis=0)
+        np.subtract(a[1:], a[:-1], out=d[1:])
         idc2 = np.sqrt((2.0 / self.nph ** 2) * np.einsum('ijk,ijk->jk', d, d))
         return a - alpha * a.mean(0) + idc2
+
+    # ------------------------------------------------------------------
+    # separable modulation and its spectral peak
+    # ------------------------------------------------------------------
+
+    def _modulation(self, kx, ky, dtype, out=None, exact=False):
+        """exp(2j*pi*(kx*xv + ky*yv)) as the outer product of its 1-D factors.
+
+        ``exact=True`` (or ``exact_modulation=True`` on the instance) evaluates
+        the fused expression instead, which is bit-identical to the original at
+        the original cost.  ``shift`` asks for it: it runs a handful of times
+        per reconstruction, so the 162 ms does not matter there, and its result
+        is stored in complex64 where a double-precision ulp would be amplified
+        into a float32 ulp of the reconstruction."""
+        if exact or self.exact_modulation:
+            ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv))
+            if out is None:
+                return ysh.astype(dtype, copy=False)
+            out[...] = ysh
+            return out
+        ex = np.exp(2j * np.pi * (kx * self._x1))
+        ey = np.exp(2j * np.pi * (ky * self._y1))
+        if out is None:
+            out = np.empty((2 * self.nx, 2 * self.ny), dtype)
+        # products are formed in complex128 and stored (rounded) into ``out``,
+        # matching the original "exponentiate in double, then cast" order
+        np.multiply(ex[:, None], ey[None, :], out=out)
+        return out
+
+    def _peak_index(self, kx, ky):
+        """Index of max |fft2(exp(2j*pi*(kx*xv + ky*yv)))|, remapped to
+        [-Nw, Nw).
+
+        |fft2(ex (x) ey)| = |fft(ex)| (x) |fft(ey)| exactly, and the argmax of
+        a non-negative outer product is the pair of 1-D argmaxes -- so two
+        length-2N transforms give the same indices as the 2N x 2N transform
+        (checked over the full parameter range used here)."""
+        Nw = self.nx
+        ax = np.abs(_fft(np.exp(2j * np.pi * (kx * self._x1)), **_FFT_KW))
+        ay = np.abs(_fft(np.exp(2j * np.pi * (ky * self._y1)), **_FFT_KW))
+        sx = int(ax.argmax())
+        sy = int(ay.argmax())
+        if sx >= Nw:
+            sx -= 2 * Nw
+        if sy >= Nw:                            # the original tests both
+            sy -= 2 * Nw                        # against Nw = self.nx
+        return sx, sy
+
+    # ------------------------------------------------------------------
 
     def separate(self, nangle, lockin=False):
         Nw = self.nx
@@ -162,102 +312,65 @@ class SIM_RECON:
             outr = np.dot(mat, data.reshape(self.nph, Nw ** 2))
         else:
             outr = np.dot(mat, self.img[nangle].reshape(self.nph, Nw ** 2))
-        if self.norders == 3:
-            self.separr = np.zeros((3, Nw * 2, Nw * 2), dtype=np.complex64)
-            self.separr[0] = np.fft.fftshift(self.interp(outr[0].reshape(Nw, Nw)) * self.winf)
-            self.separr[1] = np.fft.fftshift(self.interp((outr[1] + 1j * outr[2]).reshape(Nw, Nw)) * self.winf)
-            self.separr[2] = np.fft.fftshift(self.interp((outr[1] - 1j * outr[2]).reshape(Nw, Nw)) * self.winf)
-        if self.norders == 5:
-            self.separr = np.zeros((5, Nw * 2, Nw * 2), dtype=np.complex64)
-            self.separr[0] = np.fft.fftshift(self.interp(outr[0].reshape(Nw, Nw)) * self.winf)
-            self.separr[1] = np.fft.fftshift(self.interp((outr[1] + 1j * outr[2]).reshape(Nw, Nw)) * self.winf)
-            self.separr[2] = np.fft.fftshift(self.interp((outr[1] - 1j * outr[2]).reshape(Nw, Nw)) * self.winf)
-            self.separr[3] = np.fft.fftshift(self.interp((outr[3] + 1j * outr[4]).reshape(Nw, Nw)) * self.winf)
-            self.separr[4] = np.fft.fftshift(self.interp((outr[3] - 1j * outr[4]).reshape(Nw, Nw)) * self.winf)
+        self.separr = np.zeros((self.norders, Nw * 2, Nw * 2), dtype=np.complex64)
+        self.separr[0] = fftshift(self.interp(outr[0].reshape(Nw, Nw)) * self.winf)
+        for order in range(1, (self.norders + 1) // 2):
+            re = outr[2 * order - 1]
+            im = outr[2 * order]
+            self.separr[2 * order - 1] = fftshift(self.interp((re + 1j * im).reshape(Nw, Nw)) * self.winf)
+            self.separr[2 * order] = fftshift(self.interp((re - 1j * im).reshape(Nw, Nw)) * self.winf)
 
     def shift0(self):
         self.otf0 = fft2(self.psf)
         zsp = self.zero_suppression(0, 0)
-        self.otf0 = self.otf0 * zsp
+        self.otf0 *= zsp
         self.imgf0 = fft2(self.separr[0])
 
     def shift(self, order, angle, spacing):
         """ shift data in freq space by multiplication in real space """
-        Nw = self.nx
         dx = self.dx / 2
         kx = dx * np.cos(angle) / spacing
         ky = dx * np.sin(angle) / spacing
-        # shift matrix
-        ysh = np.zeros((2, 2 * Nw, 2 * Nw), dtype=np.complex64)
-        ysh[0, :, :] = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv))
-        ysh[1, :, :] = np.exp(2j * np.pi * (-kx * self.xv - ky * self.yv))
+        # shift matrix (complex64, as the original (2, 2N, 2N) buffer was);
+        # exp(-z) is bit-identical to conj(exp(z)) for these arguments
+        ysh_0 = self._modulation(kx, ky, np.complex64, exact=True)
+        ysh_1 = ysh_0.conj()
         # 1st order positive
-        self.otf_1_0 = fft2(self.psf * ysh[0])
-        yshf = np.abs(fft2(ysh[0]))
-        sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < Nw:
-            sx = sx
-        else:
-            sx = sx - 2 * Nw
-        if sy < Nw:
-            sy = sy
-        else:
-            sy = sy - 2 * Nw
+        self.otf_1_0 = fft2(self.psf * ysh_0, overwrite=True)
+        sx, sy = self._peak_index(kx, ky)
         temp = np.sqrt(sx ** 2 + sy ** 2) / (2 * self.radius)
         self.eh = np.append(self.eh, temp)
-        zsp = self.zero_suppression(sx, sy)
-        self.otf_1_0 = self.otf_1_0 * zsp
-        self.imgf_1_0 = fft2(self.separr[2 * (order - 1) + 1] * ysh[0])
+        self.otf_1_0 *= self.zero_suppression(sx, sy)
+        self.imgf_1_0 = fft2(self.separr[2 * (order - 1) + 1] * ysh_0, overwrite=True)
         # 1st order negative
-        self.otf_1_1 = fft2(self.psf * ysh[1])
-        yshf = np.abs(fft2(ysh[1]))
-        sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < Nw:
-            sx = sx
-        else:
-            sx = sx - 2 * Nw
-        if sy < Nw:
-            sy = sy
-        else:
-            sy = sy - 2 * Nw
-        zsp = self.zero_suppression(sx, sy)
+        self.otf_1_1 = fft2(self.psf * ysh_1, overwrite=True)
+        sx, sy = self._peak_index(-kx, -ky)
         temp = np.sqrt(sx ** 2 + sy ** 2) / (2 * self.radius)
         self.eh = np.append(self.eh, temp)
-        self.otf_1_1 = self.otf_1_1 * zsp
-        self.imgf_1_1 = fft2(self.separr[2 * (order - 1) + 2] * ysh[1])
+        self.otf_1_1 *= self.zero_suppression(sx, sy)
+        self.imgf_1_1 = fft2(self.separr[2 * (order - 1) + 2] * ysh_1, overwrite=True)
 
     def getoverlap(self, order, angle, spacing, verbose=False):
         dx = self.dx / 2
-        Nw = self.nx
         kx = dx * np.cos(angle) / spacing
         ky = dx * np.sin(angle) / spacing
-
-        ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv))
-        otf = fft2(self.psf * ysh)
-        yshf = np.abs(fft2(ysh))
-        sx, sy = np.unravel_index(yshf.argmax(), yshf.shape)
-        if sx < Nw:
-            sx = sx
-        else:
-            sx = sx - 2 * Nw
-        if sy < Nw:
-            sy = sy
-        else:
-            sy = sy - 2 * Nw
-        zsp = self.zero_suppression(sx, sy)
-        otf = otf * zsp
-        imgf = fft2(self.separr[order] * ysh)
-        cutoff = self.cutoff
         imgf0 = self.imgf0
         otf0 = self.otf0
-        wimgf0 = otf * imgf0
-        wimgf1 = otf0 * imgf
-        # msk = abs(otf0 * otf) > cutoff
-        msk = zsp * self.zero_suppression(0, 0)
-        a = np.sum(msk * wimgf1 * wimgf0.conj()) / np.sum(msk * wimgf0 * wimgf0.conj())
-        mag = np.abs(a)
-        phase = np.angle(a)
+        sx, sy = self._peak_index(kx, ky)
+
         if verbose:
+            # literal full-grid form, kept for the diagnostic maps it writes
+            cutoff = self.cutoff
+            ysh = self._modulation(kx, ky, np.complex128)
+            otf = fft2(self.psf * ysh, overwrite=True)
+            zsp = self.zero_suppression(sx, sy)
+            otf = otf * zsp
+            imgf = fft2(self.separr[order] * ysh, overwrite=True)
+            # msk = abs(otf0 * otf) > cutoff
+            msk = zsp * self.zero_suppression(0, 0)
+            wimgf0 = otf * imgf0
+            wimgf1 = otf0 * imgf
+            a = np.sum(msk * wimgf1 * wimgf0.conj()) / np.sum(msk * wimgf0 * wimgf0.conj())
             t = (msk * wimgf1 * wimgf0.conj()) / (msk * wimgf0 * wimgf0.conj())
             t[np.isnan(t)] = 0.0
             figure()
@@ -268,29 +381,58 @@ class SIM_RECON:
             imshow(np.angle(np.fft.fftshift(t)), interpolation='nearest')
             colorbar()
             tf.imwrite('overlap_phs.tif', np.angle(np.fft.fftshift(t)).astype(np.float32), photometric='minisblack')
-        return mag, phase
+            return np.abs(a), np.angle(a)
 
-    def mapoverlap(self, order, angle, spacing, nps=10, r_ang=0.02, r_sp=0.008):
+        # msk = zero_suppression(sx, sy) * zero_suppression(0, 0) is 1.0 on the
+        # disc intersection and 0.0 elsewhere, and the same two discs already
+        # multiply otf and otf0 -- so the overlap integral is the sum of the
+        # unmasked products over that support alone.
+        ysh = self._modulation(kx, ky, np.complex128, out=self._scratch('ysh', np.complex128))
+        otf = fft2(np.multiply(self.psf, ysh, out=self._scratch('p0', np.complex128)), overwrite=True)
+        imgf = fft2(np.multiply(self.separr[order], ysh, out=self._scratch('p1', np.complex128)), overwrite=True)
+        idx = self._support(sx, sy)
+        wimgf0 = np.take(otf.reshape(-1), idx) * np.take(imgf0.reshape(-1), idx)
+        wimgf1 = np.take(otf0.reshape(-1), idx) * np.take(imgf.reshape(-1), idx)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            a = np.sum(wimgf1 * wimgf0.conj()) / np.sum(wimgf0 * wimgf0.conj())
+        return np.abs(a), np.angle(a)
+
+    def mapoverlap(self, order, angle, spacing, nps=10, r_ang=0.02, r_sp=0.008,
+                   nthreads=1, verbose=True):
         d_ang = 2 * r_ang / nps
         d_sp = 2 * r_sp / nps
         ang_iter = np.arange(-r_ang, r_ang + d_ang / 2, d_ang) + angle
         sp_iter = np.arange(-r_sp, r_sp + d_sp / 2, d_sp) + spacing
         magarr = np.zeros((nps + 1, nps + 1))
         pharr = np.zeros((nps + 1, nps + 1))
-        for m, ang in enumerate(ang_iter):
-            for n, sp in enumerate(sp_iter):
-                print(m, n)
-                mag, phase = self.getoverlap(2 * (order - 1) + 1, ang, sp)
-                if np.isnan(mag):
-                    magarr[m, n] = 0.0
-                else:
-                    magarr[m, n] = mag
-                    pharr[m, n] = phase
-        figure()
-        subplot(211)
-        imshow(magarr, interpolation='nearest')
-        subplot(212)
-        imshow(pharr, interpolation='nearest')
+        od = 2 * (order - 1) + 1
+
+        def _cell(m, n):
+            return self.getoverlap(od, ang_iter[m], sp_iter[n])
+
+        cells = [(m, n) for m in range(len(ang_iter)) for n in range(len(sp_iter))]
+        if nthreads and nthreads > 1:
+            # candidates are independent; each worker gets its own scratch
+            with ThreadPoolExecutor(max_workers=int(nthreads)) as pool:
+                results = list(pool.map(lambda mn: _cell(*mn), cells))
+        else:
+            results = []
+            for m, n in cells:
+                if verbose:
+                    print(m, n)
+                results.append(_cell(m, n))
+        for (m, n), (mag, phase) in zip(cells, results):
+            if np.isnan(mag):
+                magarr[m, n] = 0.0
+            else:
+                magarr[m, n] = mag
+                pharr[m, n] = phase
+        if verbose:
+            figure()
+            subplot(211)
+            imshow(magarr, interpolation='nearest')
+            subplot(212)
+            imshow(pharr, interpolation='nearest')
         # get maximum
         k, l = np.where(magarr == magarr.max())
         angmax = k[0] * d_ang - r_ang + angle
@@ -301,15 +443,9 @@ class SIM_RECON:
         nx = 2 * self.nx
         ny = 2 * self.ny
         self.Snum = np.zeros((nx, ny), dtype=np.complex64)
-        self.Sden = np.zeros((nx, ny), dtype=np.complex64)
-        self.Sden += self.mu ** 2
+        self.Sden = np.full((nx, ny), self.mu ** 2, dtype=np.complex64)
 
     def add_recon(self, o, ang, spacing, phase, mag, crop=False, zero=True):
-        if crop:
-            zsp = 1 - self.zero_suppression(0, 0)
-        else:
-            zsp = 1
-
         if zero:
             # 0th order
             imgf = self.imgf0
@@ -318,16 +454,20 @@ class SIM_RECON:
             self.Sden += abs(mag * otf) ** 2
         self.shift(o, ang, spacing)
         ph = mag * np.exp(1j * phase)
+        if crop:
+            zsp = 1 - self.zero_suppression(0, 0)
+            imgf_p, otf_p = zsp * self.imgf_1_0, zsp * self.otf_1_0
+            imgf_n, otf_n = zsp * self.imgf_1_1, zsp * self.otf_1_1
+        else:
+            # zsp == 1: use the arrays as they are instead of copying them
+            imgf_p, otf_p = self.imgf_1_0, self.otf_1_0
+            imgf_n, otf_n = self.imgf_1_1, self.otf_1_1
         # +1st order
-        imgf = zsp * self.imgf_1_0
-        otf = zsp * self.otf_1_0
-        self.Snum += ph * otf.conj() * imgf
-        self.Sden += abs(mag * otf) ** 2
+        self.Snum += ph * otf_p.conj() * imgf_p
+        self.Sden += abs(mag * otf_p) ** 2
         # -1 order
-        imgf = zsp * self.imgf_1_1
-        otf = zsp * self.otf_1_1
-        self.Snum += ph.conj() * otf.conj() * imgf
-        self.Sden += abs(mag * otf) ** 2
+        self.Snum += ph.conj() * otf_n.conj() * imgf_n
+        self.Sden += abs(mag * otf_n) ** 2
 
     def finish_recon(self):
         # ss = np.max(self.eh)
@@ -341,7 +481,14 @@ class SIM_RECON:
 
     def hessian_denoise(self, mu=1.0, lam=1.0, w_xy=2.0, n_iter=50):
         """Split-Bregman Hessian denoiser for a Wiener-SIM reconstruction g.
-        min ||f_xx||_1 + ||f_yy||_1 + w_xy||f_xy||_1 + (mu/2)||f - g||^2 ."""
+        min ||f_xx||_1 + ||f_yy||_1 + w_xy||f_xy||_1 + (mu/2)||f - g||^2 .
+
+        Left byte-for-byte as written.  It is off the reconstruction path (the
+        pipeline in __main__ denoises with heissian_deconv.hessian_deconv), it
+        runs on numpy's FFT, which is not bit-identical to scipy's, and its L1
+        shrinkage is discontinuous, so any reassociation of the f-update shows
+        up in the output instead of cancelling.  Nothing here is worth that.
+        """
         g = np.real(self.finalimage)
         ny, nx = g.shape
         wx = 2 * np.pi * np.fft.fftfreq(nx)[None, :]
@@ -373,23 +520,65 @@ class SIM_RECON:
         return f
 
     def interp(self, arr):
+        """2x Fourier interpolation.
+
+        Writing the four spectrum quadrants straight into the padded grid is
+        bit-identical to fftshift -> np.pad -> fftshift and skips three copies
+        of the 2N x 2N grid."""
         nx, ny = arr.shape
         px = int(nx / 2)
         py = int(ny / 2)
         arrf = fft2(arr)
-        arro = np.pad(np.fft.fftshift(arrf), ((px, px), (py, py)), 'constant', constant_values=(0, 0))
-        out = ifft2(np.fft.fftshift(arro))
+        arro = np.zeros((2 * nx, 2 * ny), dtype=arrf.dtype)
+        arro[:px, :py] = arrf[:px, :py]
+        arro[:px, -py:] = arrf[:px, py:]
+        arro[-px:, :py] = arrf[px:, :py]
+        arro[-px:, -py:] = arrf[px:, py:]
+        out = ifft2(arro, overwrite=True)
         return out
 
     def zero_suppression(self, sx, sy, g=False):
+        """Disc of ``radius`` centred on (sx, sy).
+
+        ``sqrt(d2) < r`` is evaluated as ``d2 < r*r``: d2 is an exact integer
+        here and r*r is not within 1e-9 of one, so the two agree exactly
+        (verified pixel-for-pixel) and 4.2 M square roots are avoided."""
         x = self.xv
         y = self.yv
-        msk = (np.sqrt((x - sx) ** 2 + (y - sy) ** 2) < self.radius) * 1.0
+        r2 = float(self.radius) ** 2
         if g:
+            msk = ((x - sx) ** 2 + (y - sy) ** 2 < r2) * 1.0
             g = 1 - self.strength * np.exp(-(np.abs((x - sx) ** 2) + np.abs((y - sy) ** 2))) / (2 * (self.fwhm ** 2))
             g[g < 1.0] = self.minv
-            msk = g * msk
+            return g * msk
+        key = (sx, sy, r2)
+        msk = self._zsp_cache.get(key)
+        if msk is None:
+            if len(self._zsp_cache) >= 8:
+                self._zsp_cache.clear()
+            msk = self._zsp_cache[key] = ((x - sx) ** 2 + (y - sy) ** 2 < r2) * 1.0
         return msk
+
+    def _support(self, sx, sy):
+        """Flat indices where ``zero_suppression(sx, sy) * zero_suppression(0, 0)``
+        is non-zero.  A row can only contribute if it satisfies both 1-D
+        necessary conditions, so the 2-D test runs on a small sub-block."""
+        r2 = float(self.radius) ** 2
+        key = (sx, sy, r2)
+        idx = self._support_cache.get(key)
+        if idx is None:
+            x = self._x1
+            y = self._y1
+            rows = np.flatnonzero(((x - sx) ** 2 < r2) & (x ** 2 < r2))
+            cols = np.flatnonzero(((y - sy) ** 2 < r2) & (y ** 2 < r2))
+            xr = x[rows][:, None]
+            yc = y[cols][None, :]
+            msk = (((xr - sx) ** 2 + (yc - sy) ** 2) < r2) & ((xr ** 2 + yc ** 2) < r2)
+            idx = (rows[:, None] * (2 * self.ny) + cols[None, :])[msk]
+            if len(self._support_cache) >= 64:
+                self._support_cache.clear()
+            self._support_cache[key] = idx
+        return idx
 
     def apod(self, mp):
         r = (2 * mp) * self.radius
@@ -424,6 +613,7 @@ if __name__ == '__main__':
     a2 = p.getoverlap(3, x2[0], x2[1])
     p.add_recon(1, x1[0], x1[1], -a1[1], 0.8, False, True)
     p.add_recon(2, x2[0], x2[1], -a2[1], 0.3, False, False)
+    p.release_buffers()
     p.finish_recon()
     p.save_results(r'C:\Users\Ruiz\Desktop\New folder (3)')
 

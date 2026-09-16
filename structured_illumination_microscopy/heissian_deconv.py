@@ -22,6 +22,23 @@ Conventions
 recon() leaves self.S (object spectrum estimate) and self.Sden in *unshifted*
 FFT order on the 2N x 2N interpolated grid.  Everything below stays in that
 order and only fftshifts at the very end, matching self.finalimage.
+
+Performance revision (2026)
+---------------------------
+Same iterations, same arithmetic, same number of transforms -- the solvers just
+stop rebuilding what does not change and stop allocating a new grid for every
+intermediate:
+
+* conj(H)*G, conj(D) and the kernel moduli are loop invariants and are now
+  hoisted out of the ADMM / split-Bregman loop.
+* d_xx and d_yy are constant along one axis, so they stay 1 x nx and ny x 1 and
+  broadcast.  The element values entering every product are unchanged, but two
+  of the three (3, 2N, 2N) complex kernels (201 MB each at 2N = 2048) are gone.
+* The per-iteration temporaries (num, v, z, a, u, b, the blur/ratio pair in RL)
+  are preallocated and written through ``out=``; the transforms use
+  ``overwrite_x`` on buffers that are already scratch.  Accumulations keep the
+  left-to-right order that ``sum()``/``np.sum(axis=0)`` used, so the results
+  are bit-identical.
 """
 
 import numpy as np
@@ -29,17 +46,23 @@ import numpy as np
 try:
     from scipy.fft import fft2 as _fft2, ifft2 as _ifft2
     _KW = {"workers": -1}
+    _SCIPY = True
 except ImportError:
     from numpy.fft import fft2 as _fft2, ifft2 as _ifft2
     _KW = {}
+    _SCIPY = False
 
 
-def _f2(a):
-    return _fft2(a, **_KW)
+def _f2(a, overwrite=False):
+    if _SCIPY:
+        return _fft2(a, overwrite_x=overwrite, **_KW)
+    return _fft2(a)
 
 
-def _i2(a):
-    return _ifft2(a, **_KW)
+def _i2(a, overwrite=False):
+    if _SCIPY:
+        return _ifft2(a, overwrite_x=overwrite, **_KW)
+    return _ifft2(a)
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +101,13 @@ def forward_model(rec, mode='matched', apodize=False, r_apod=None):
 
     if mode == 'matched':
         norm = OTF2.max()
-        H = OTF2 / norm
-        g = np.real(_i2(rec.Snum)) / norm
+        H = OTF2
+        H /= norm                                      # OTF2 is a fresh array
+        g = np.real(_i2(rec.Snum))
+        g = g / norm
     elif mode == 'wiener':
         H = OTF2 / np.maximum(Sden, 1e-12)
-        H = H / H.max()
+        H /= H.max()
         g = np.real(_i2(rec.S))
     else:
         raise ValueError("mode must be 'matched' or 'wiener'")
@@ -95,7 +120,7 @@ def forward_model(rec, mode='matched', apodize=False, r_apod=None):
         r = np.hypot(rec.xv, rec.yv)                   # unshifted order
         A = np.clip(1.0 - r / float(r_apod), 0.0, 1.0)
         H = H * A
-        g = np.real(_i2(A * _f2(g)))
+        g = np.real(_i2(A * _f2(g), overwrite=True))
 
     return g, H
 
@@ -114,15 +139,20 @@ def effective_otf(rec, mode='matched', apodize=False, r_apod=None):
 # ---------------------------------------------------------------------------
 
 def _hessian_kernels(shape):
-    """Fourier multipliers of (d_xx, d_yy, sqrt(2) d_xy), unshifted order."""
+    """Fourier multipliers of (d_xx, d_yy, sqrt(2) d_xy), unshifted order.
+
+    d_xx does not depend on ky and d_yy does not depend on kx, so they are
+    returned with a length-1 axis and broadcast where they are used.  Every
+    element that enters a product is the value the full 2-D kernel held.
+    """
     ny, nx = shape
     kx = 2 * np.pi * np.fft.fftfreq(nx)[None, :]
     ky = 2 * np.pi * np.fft.fftfreq(ny)[:, None]
     ex, ey = np.exp(1j * kx), np.exp(1j * ky)
-    dxx = (ex - 2.0 + np.conj(ex)) * np.ones((ny, 1))
-    dyy = (ey - 2.0 + np.conj(ey)) * np.ones((1, nx))
-    dxy = np.sqrt(2.0) * (ex - 1.0) * (ey - 1.0)
-    return np.stack([dxx, dyy, dxy])
+    dxx = ex - 2.0 + np.conj(ex)                        # (1, nx)
+    dyy = ey - 2.0 + np.conj(ey)                        # (ny, 1)
+    dxy = np.sqrt(2.0) * (ex - 1.0) * (ey - 1.0)        # (ny, nx)
+    return (dxx, dyy, dxy)
 
 
 # ---------------------------------------------------------------------------
@@ -151,42 +181,76 @@ def hessian_deconv(rec, lam=1e-4, rho=1.0, n_iter=60, prior='iso',
     g = g / scale                       # lam is not scale invariant
 
     D = _hessian_kernels(g.shape)
+    nd = len(D)
     G = _f2(g)
-    denom = np.abs(H) ** 2 + rho * np.sum(np.abs(D) ** 2, axis=0) + rho
+    denom = np.abs(H) ** 2 + rho * sum(np.abs(Dk) ** 2 for Dk in D) + rho
+
+    # loop invariants
+    HcG = np.conj(H) * G
+    Dc = [np.conj(Dk) for Dk in D]
 
     f = g.copy()
-    z = np.zeros((3,) + g.shape)
+    z = np.zeros((nd,) + g.shape)
     a = np.zeros_like(z)
     u = np.maximum(g, 0.0)
     b = np.zeros_like(g)
+
+    # preallocated work space
+    v = np.empty_like(z)
+    DF = np.empty((nd,) + g.shape, np.complex128)
+    w = np.empty_like(g)
+    nrm = np.empty_like(g)
+    shrink = np.empty_like(g)
 
     for it in range(n_iter):
         f_prev = f
 
         # f-update: quadratic subproblem, diagonal in Fourier
-        num = np.conj(H) * G + rho * _f2(u - b)
-        num = num + rho * np.sum(np.conj(D) * _f2(z - a), axis=0)
-        f = np.real(_i2(num / denom))
+        num = _f2(u - b, overwrite=True)
+        num *= rho
+        num += HcG
+        Z = _f2(z - a, overwrite=True)
+        acc = Dc[0] * Z[0]
+        for i in range(1, nd):
+            acc += Dc[i] * Z[i]
+        acc *= rho
+        num += acc
+        num /= denom
+        f = np.real(_i2(num, overwrite=True)).copy()
 
         # z-update: prox of the Hessian penalty
-        v = np.real(_i2(D * _f2(f))) + a
+        F = _f2(f)
+        for i in range(nd):
+            np.multiply(D[i], F, out=DF[i])
+        np.add(np.real(_i2(DF, overwrite=True)), a, out=v)
         if prior == 'iso':
-            nrm = np.sqrt(np.sum(v ** 2, axis=0))
-            z = v * np.maximum(1.0 - lam / (rho * np.maximum(nrm, 1e-12)), 0.0)
+            np.multiply(v[0], v[0], out=nrm)
+            for i in range(1, nd):
+                nrm += v[i] ** 2
+            np.sqrt(nrm, out=nrm)
+            np.maximum(nrm, 1e-12, out=shrink)
+            shrink *= rho
+            np.divide(lam, shrink, out=shrink)
+            np.subtract(1.0, shrink, out=shrink)
+            np.maximum(shrink, 0.0, out=shrink)
+            np.multiply(v, shrink, out=z)
         elif prior == 'l1':
-            z = np.sign(v) * np.maximum(np.abs(v) - lam / rho, 0.0)
+            np.abs(v, out=z)
+            z -= lam / rho
+            np.maximum(z, 0.0, out=z)
+            z *= np.sign(v)
         else:
             raise ValueError("prior must be 'iso' or 'l1'")
-        a = v - z
+        np.subtract(v, z, out=a)
 
         # u-update: projection onto f >= 0
-        w = f + b
-        u = np.maximum(w, 0.0)
-        b = w - u
+        np.add(f, b, out=w)
+        np.maximum(w, 0.0, out=u)
+        np.subtract(w, u, out=b)
 
         rel = np.linalg.norm(f - f_prev) / (np.linalg.norm(f) + 1e-12)
         if verbose and (it % 10 == 0 or it == n_iter - 1):
-            res = np.real(_i2(H * _f2(f))) - g
+            res = np.real(_i2(H * _f2(f), overwrite=True)) - g
             print("  it %3d  resid %.3e  rel %.2e"
                   % (it, np.sqrt((res ** 2).mean()), rel))
         if rel < tol:
@@ -227,16 +291,19 @@ def rl_deconv(rec, n_iter=50, mode='matched', apodize=False, r_apod=None,
 
     Hc = np.conj(H)                      # H is real and even -> h^T = h
     f = np.maximum(g.copy(), eps)
+    ratio = np.empty_like(g)
 
     for it in range(n_iter):
-        blur = np.real(_i2(H * _f2(f)))
-        ratio = g / np.maximum(blur, eps)
-        corr = np.real(_i2(Hc * _f2(ratio)))
+        blur = np.real(_i2(H * _f2(f), overwrite=True))
+        np.maximum(blur, eps, out=blur)
+        np.divide(g, blur, out=ratio)
+        corr = np.real(_i2(Hc * _f2(ratio), overwrite=True))
         if reg > 0.0:
             corr = corr / (1.0 + reg * (corr - 1.0) ** 2)
-        f = np.maximum(f * corr, 0.0)
+        f *= corr
+        np.maximum(f, 0.0, out=f)
         if verbose and (it % 10 == 0 or it == n_iter - 1):
-            res = np.real(_i2(H * _f2(f))) - g
+            res = np.real(_i2(H * _f2(f), overwrite=True)) - g
             print("  RL it %3d  resid %.3e  max %.3f"
                   % (it, np.sqrt((res ** 2).mean()), f.max()))
 
