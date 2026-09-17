@@ -36,8 +36,6 @@ _WORKERS = -1
 
 
 def fft2(a, overwrite=False):
-    """Forward 2-D FFT.  ``overwrite`` lets the transform reuse ``a`` as its
-    own workspace; the returned values are bit-identical either way."""
     if _SCIPY_FFT:
         return _fft2(a, workers=_WORKERS, overwrite_x=overwrite)
     return _fft2(a)
@@ -93,8 +91,6 @@ class SIM_RECON:
         return arr
 
     def release_buffers(self):
-        """Drop the scratch buffers of the calling thread (3 x 2N x 2N
-        complex128 each) once the overlap search is done."""
         self._tls.buf = {}
 
     def raps_stack(self, stack, window="tukey", dtype=np.float64, verbose=True):
@@ -175,7 +171,6 @@ class SIM_RECON:
         yv[0, ny:2 * ny] = -np.flip(i_yv, 0)
         self.xv = xv
         self.yv = yv
-        # 1-D views of the same coordinates, for the separable operations
         self._x1 = xv[:, 0]
         self._y1 = yv[0, :]
         self._zsp_cache.clear()
@@ -215,8 +210,6 @@ class SIM_RECON:
         ey = np.exp(2j * np.pi * (ky * self._y1))
         if out is None:
             out = np.empty((2 * self.nx, 2 * self.ny), dtype)
-        # products are formed in complex128 and stored (rounded) into ``out``,
-        # matching the original "exponentiate in double, then cast" order
         np.multiply(ex[:, None], ey[None, :], out=out)
         return out
 
@@ -259,8 +252,6 @@ class SIM_RECON:
         dx = self.dx / 2
         kx = dx * np.cos(angle) / spacing
         ky = dx * np.sin(angle) / spacing
-        # shift matrix (complex64, as the original (2, 2N, 2N) buffer was);
-        # exp(-z) is bit-identical to conj(exp(z)) for these arguments
         ysh_0 = self._modulation(kx, ky, np.complex64, exact=True)
         ysh_1 = ysh_0.conj()
         # 1st order positive
