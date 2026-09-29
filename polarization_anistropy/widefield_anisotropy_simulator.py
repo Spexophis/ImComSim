@@ -49,7 +49,6 @@ Analysis helpers compute r = (I_par - G I_perp) / (I_par + 2 G I_perp), the
 linear Stokes parameters and the Axelrod high-NA correction of r.
 """
 
-import argparse
 import os
 import sys
 import time
@@ -578,45 +577,42 @@ def build_demo(sim, n_per_population=40, margin=1.0, min_dist=0.6, photons=3000.
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('--frames', type=int, default=10)
-    ap.add_argument('--detection', choices=('split', 'dofp'), default='split')
-    ap.add_argument('--excitation', default='0', help="linear angle in deg, or 'circular'")
-    ap.add_argument('--nx', type=int, default=128, help='camera pixels per side')
-    ap.add_argument('--pixel', type=float, default=0.1, help='camera pixel size in sample [um]')
-    ap.add_argument('--na', type=float, default=1.4)
-    ap.add_argument('--molecules', type=int, default=30, help='molecules per population')
-    ap.add_argument('--photons', type=float, default=3000.0)
-    ap.add_argument('--exposure', type=float, default=0.05, help='[s]')
-    ap.add_argument('--lifetime', type=float, default=4e-9, help='[s]')
-    ap.add_argument('--seed', type=int, default=1)
-    ap.add_argument('--out', default=None, help='output folder (default: no files written)')
-    ap.add_argument('--show', action='store_true', help='show the summary figure')
-    args = ap.parse_args()
+    n_frames = 10
+    detection = 'split'  # 'split' or 'dofp'
+    excitation = 0.0  # linear angle in deg, or 'circular'
+    nx = 128  # camera pixels per side
+    pixel = 0.1  # camera pixel size in sample [um]
+    na = 1.4
+    n_molecules = 30  # molecules per population
+    photons = 3000.0
+    exposure = 0.05  # [s]
+    lifetime = 4e-9  # [s]
+    seed = 1
+    out = None  # output folder (None: no files written)
+    show = False  # show the summary figure
 
-    excitation = args.excitation if args.excitation in ('circular', 'unpolarized') else float(args.excitation)
-    sim = AnisotropySimulator(nx_cam=args.nx, pixel_size=args.pixel, na=args.na, excitation=excitation,
-                              exposure=args.exposure, detection=args.detection,
-                              rng=np.random.default_rng(args.seed))
-    labels = build_demo(sim, n_per_population=args.molecules, photons=args.photons, lifetime=args.lifetime)
-    res = sim.acquire(args.frames)
+    sim = AnisotropySimulator(nx_cam=nx, pixel_size=pixel, na=na, excitation=excitation,
+                              exposure=exposure, detection=detection,
+                              rng=np.random.default_rng(seed))
+    labels = build_demo(sim, n_per_population=n_molecules, photons=photons, lifetime=lifetime)
+    res = sim.acquire(n_frames)
     truth = sim.ground_truth()
 
     # --- analysis: background/offset subtraction, per-molecule anisotropy ---
-    if args.detection == 'split':
+    if detection == 'split':
         chans = res['data'].astype(np.float64)
         pix = sim.pixel_size
     else:
         chans = demosaic(res['data'].astype(np.float64))
         pix = 2 * sim.pixel_size
     chans = (chans - sim.offset) / (sim.gain * sim.qe) - sim.background
-    if args.detection == 'split':
+    if detection == 'split':
         chans = chans / 0.5
     s0, s1, s2, dolp, aolp = stokes(chans.mean(axis=0))
 
     ka, kb, kc = sim.psf.collection_factors()
     print(f"collection factors  Ka={ka:.3f}  Kb={kb:.3f}  Kc={kc:.3f}")
-    print(f"excitation={excitation}  detection={args.detection}")
+    print(f"excitation={excitation}  detection={detection}")
     if isinstance(excitation, str):
         print("circular excitation: no parallel/perpendicular channels; reporting Stokes/DoLP only")
         ipar = iperp = None
@@ -640,11 +636,11 @@ def main():
                   f"{r_mol[s].mean():7.3f}+-{r_mol[s].std():.3f} {np.nanmean(r_corr[s]):7.3f}+-"
                   f"{np.nanstd(r_corr[s]):.3f} {r_frames[s].std(axis=1).mean():18.3f}")
 
-    if args.out is not None:
+    if out is not None:
         import tifffile as tf
-        os.makedirs(args.out, exist_ok=True)
+        os.makedirs(out, exist_ok=True)
         stamp = time.strftime('%Y%m%d%H%M%S')
-        base = os.path.join(args.out, f"{stamp}_wf_anisotropy_{args.detection}")
+        base = os.path.join(out, f"{stamp}_wf_anisotropy_{detection}")
         tf.imwrite(base + '_raw.tif', res['data'])
         tf.imwrite(base + '_ideal.tif', res['ideal'].astype(np.float32))
         if ipar is not None:
@@ -657,9 +653,9 @@ def main():
         table = np.column_stack([truth[k] for k in truth] + [labels])
         np.savetxt(base + '_ground_truth.csv', table, delimiter=',', header=','.join(cols), comments='')
         save_figure(base + '_summary.png', sim, chans, s0, labels, truth,
-                    None if ipar is None else (r_mol, r_corr), show=args.show)
+                    None if ipar is None else (r_mol, r_corr), show=show)
         print(f"saved to {base}_*")
-    elif args.show:
+    elif show:
         save_figure(None, sim, chans, s0, labels, truth,
                     None if ipar is None else (r_mol, r_corr), show=True)
 
