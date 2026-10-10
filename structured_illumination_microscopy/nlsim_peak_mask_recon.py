@@ -15,7 +15,6 @@ Pipeline
 Raw stack layout: (n_angles * n_phases, ny, nx), angle-major.
 """
 
-import argparse
 import json
 from pathlib import Path
 
@@ -250,33 +249,27 @@ class PeakMaskRecon:
         self.otf_total = t2
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('input')
-    ap.add_argument('outdir')
-    ap.add_argument('--angles', type=int, default=6)
-    ap.add_argument('--phases', type=int, default=10)
-    ap.add_argument('--pixel-size', type=float, default=0.069, help='raw pixel size [um]')
-    ap.add_argument('--na', type=float, default=1.3)
-    ap.add_argument('--wavelength', type=float, default=0.5, help='emission wavelength [um]')
-    ap.add_argument('--offset', type=float, default=100.0, help='camera offset subtracted from the raw data')
-    ap.add_argument('--threshold', type=float, default=0.85,
-                    help='keep pixels where the normalised sinusoidal pattern (0..1) >= threshold')
-    ap.add_argument('--mask', choices=('ramp', 'binary'), default='ramp',
-                    help='binary: hard threshold. ramp: threshold with linear weighting up to the peak. The hard mask '
-                         'has a strong 10th harmonic that leaves a ripple in the 10-phase sum')
-    ap.add_argument('--mu', default='auto',
-                    help="'auto' (noise/object power estimated from the data) or a constant Wiener parameter")
-    ap.add_argument('--measured-phases', action='store_true', help='use the fitted per-frame phases for the masks')
-    ap.add_argument('--p1', type=float, default=None, help='fix the modulation depth instead of measuring it')
-    ap.add_argument('--save-stacks', action='store_true', help='also write the 60 patterns and 60 filtered frames')
-    a = ap.parse_args()
+if __name__ == '__main__':
+    # ---- test on the 6-angle x 10-phase 2D NLSIM stack ---------------------------------------------------------
+    fn = r"812bec86-2D_NLSIM_mito_000000_ids_0_59-1.tif"   # raw stack, (60, 496, 496), angle-major
+    out = Path(r"nlsim_peak_mask_results")                 # output folder
+    n_angles = 6
+    n_phases = 10
+    pixel_size = 0.069          # raw pixel size [um]
+    na = 1.3
+    wavelength = 0.5            # emission wavelength [um]
+    offset = 100.0              # camera offset subtracted from the raw data
+    threshold = 0.85            # keep pixels where the normalised sinusoidal pattern (0..1) >= threshold
+    mask = 'ramp'               # 'binary': hard threshold (leaves a 10th-harmonic ripple in the 10-phase sum)
+                                # 'ramp': threshold, weighted linearly from 0 (threshold) to 1 (pattern peak)
+    mu = 'auto'                 # 'auto': noise / object power estimated from the data; float: constant Wiener parameter
+    measured_phases = False     # True: use the fitted per-frame phases for the masks instead of equally spaced ones
+    p1 = None                   # fix the first-order modulation depth instead of measuring it
+    save_stacks = True          # also write the 60 patterns and the 60 masked frames
 
-    out = Path(a.outdir)
     out.mkdir(parents=True, exist_ok=True)
-    rec = PeakMaskRecon(tf.imread(a.input), a.angles, a.phases, a.pixel_size, a.na, a.wavelength, a.offset, a.threshold, a.mask)
-    rec.run(keep_stacks=a.save_stacks, mu=a.mu if a.mu == 'auto' else float(a.mu), p1=a.p1,
-            measured_phases=a.measured_phases)
+    rec = PeakMaskRecon(tf.imread(fn), n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
+    rec.run(keep_stacks=save_stacks, mu=mu, p1=p1, measured_phases=measured_phases)
 
     f32 = lambda x: np.asarray(x, np.float32)
     tf.imwrite(out / 'widefield_interp.tif', f32(rec.wf), photometric='minisblack')
@@ -285,14 +278,10 @@ def main():
     tf.imwrite(out / 'effective_otf_total.tif', f32(np.fft.fftshift(rec.otf_total)), photometric='minisblack')
     tf.imwrite(out / 'recon_spectrum_log.tif', f32(np.log10(np.abs(np.fft.fftshift(rec.S)) + 1e-6)),
                photometric='minisblack')
-    if a.save_stacks:
+    if save_stacks:
         tf.imwrite(out / 'patterns_uint8.tif', np.array(rec.patterns), photometric='minisblack')
         tf.imwrite(out / 'filtered_frames.tif', np.array(rec.filtered), photometric='minisblack')
-    summary = dict(pixel_size_um=a.pixel_size / 2, mask_fraction=rec.mask_fraction, mask=a.mask, threshold=a.threshold, mu=a.mu,
-                   p1=rec.p1.tolist(), patterns=rec.pinfo)
+    summary = dict(pixel_size_um=pixel_size / 2, mask_fraction=rec.mask_fraction, mask=mask, threshold=threshold,
+                   mu=mu, p1=rec.p1.tolist(), patterns=rec.pinfo)
     (out / 'summary.json').write_text(json.dumps(summary, indent=1, default=float))
     print(json.dumps(summary, indent=1, default=float))
-
-
-if __name__ == '__main__':
-    main()
