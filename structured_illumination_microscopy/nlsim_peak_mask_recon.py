@@ -148,9 +148,25 @@ class PeakMaskRecon:
         return float(np.mean(mk * np.cos(m * t)))
 
     # ---- pipeline ------------------------------------------------------------------------------------------
-    def run(self, keep_stacks=False, mu='auto', measure_modulation=True, p1=None, measured_phases=False):
-        self.up = fft_upsample2(self.raw.reshape(-1, self.n0, self.n0)).reshape(self.nang, self.nph, self.n, self.n)
+    def lockin_demod(self, ang, alpha):
+        """Lock-in demodulation of one angle (same as SIM_RECON.lockin_demod in sim_recon/sim2d_recon_m.py):
+        removes the fraction ``alpha`` of the unmodulated (phase-averaged) signal from every frame and adds the
+        pixel-wise modulation amplitude estimated from the frame-to-frame differences along the phase axis.
+        Only the phase-independent (zero-order) term is changed, the modulated harmonics are untouched."""
+        a = self.raw[ang]
+        d = np.empty_like(a)
+        d[0] = a[0] - a[-1]                     # == a - np.roll(a, 1, axis=0)
+        np.subtract(a[1:], a[:-1], out=d[1:])
+        idc2 = np.sqrt((2.0 / self.nph ** 2) * np.einsum('ijk,ijk->jk', d, d))
+        return a - alpha * a.mean(0) + idc2
+
+    def run(self, keep_stacks=False, mu='auto', measure_modulation=True, p1=None, measured_phases=False,
+            lockin_alpha=None):
+        # pattern parameters come from the plain offset-subtracted data
         self.k, self.phase_meas, self.phase_eq, self.pinfo = estimate_patterns(self.raw)
+        data = self.raw if lockin_alpha is None else np.stack([self.lockin_demod(a, lockin_alpha)
+                                                               for a in range(self.nang)])
+        self.up = fft_upsample2(data.reshape(-1, self.n0, self.n0)).reshape(self.nang, self.nph, self.n, self.n)
         # Equally spaced mask phases make sum_j exp(i*n*theta_j) vanish exactly, so the unmodulated (zero-order)
         # image leaves no ghost at the pattern frequency; the small step error of the data costs < 1 % of the
         # first-order signal. The measured phases can be selected instead.
@@ -264,12 +280,13 @@ if __name__ == '__main__':
                                 # 'ramp': threshold, weighted linearly from 0 (threshold) to 1 (pattern peak)
     mu = 'auto'                 # 'auto': noise / object power estimated from the data; float: constant Wiener parameter
     measured_phases = False     # True: use the fitted per-frame phases for the masks instead of equally spaced ones
+    lockin_alpha = None         # lock-in demodulation of the raw data before masking, e.g. 0.8 (None: off)
     p1 = None                   # fix the first-order modulation depth instead of measuring it
     save_stacks = True          # also write the 60 patterns and the 60 masked frames
 
     out.mkdir(parents=True, exist_ok=True)
     rec = PeakMaskRecon(tf.imread(fn), n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
-    rec.run(keep_stacks=save_stacks, mu=mu, p1=p1, measured_phases=measured_phases)
+    rec.run(keep_stacks=save_stacks, mu=mu, p1=p1, measured_phases=measured_phases, lockin_alpha=lockin_alpha)
 
     f32 = lambda x: np.asarray(x, np.float32)
     tf.imwrite(out / 'widefield_interp.tif', f32(rec.wf), photometric='minisblack')
@@ -282,6 +299,6 @@ if __name__ == '__main__':
         tf.imwrite(out / 'patterns_uint8.tif', np.array(rec.patterns), photometric='minisblack')
         tf.imwrite(out / 'filtered_frames.tif', np.array(rec.filtered), photometric='minisblack')
     summary = dict(pixel_size_um=pixel_size / 2, mask_fraction=rec.mask_fraction, mask=mask, threshold=threshold,
-                   mu=mu, p1=rec.p1.tolist(), patterns=rec.pinfo)
+                   lockin_alpha=lockin_alpha, mu=mu, p1=rec.p1.tolist(), patterns=rec.pinfo)
     (out / 'summary.json').write_text(json.dumps(summary, indent=1, default=float))
     print(json.dumps(summary, indent=1, default=float))
