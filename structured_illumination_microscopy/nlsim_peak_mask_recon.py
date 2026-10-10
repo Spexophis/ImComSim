@@ -57,12 +57,12 @@ def _dft_at(img, f0, f1):
 
 def estimate_patterns(raw, min_period=3.0, max_period=12.0):
     """raw: (nang, nph, ny, nx), offset removed, original sampling.
-    Returns per angle: wave vector (cycles per RAW pixel, axis0/axis1), per-frame pattern phase [rad] (measured, and
-    equally spaced with the same mean), defined for pattern(x) = 0.5 * (1 + cos(2*pi*k.x + phase_j)) with x in raw pixel units (origin = pixel 0)."""
+    Returns per angle: wave vector (cycles per RAW pixel, axis0/axis1), per-frame pattern phase [rad] (frame by frame, linear fit,
+    and equally spaced with the same mean), defined for pattern(x) = 0.5 * (1 + cos(2*pi*k.x + phase_j)) with x in raw pixel units (origin = pixel 0)."""
     nang, nph, ny, nx = raw.shape
     w = np.outer(tukey(ny, 0.2), tukey(nx, 0.2))
     j = np.arange(nph)
-    ks, phases, phases_eq, info = [], [], [], []
+    ks, phases, phases_eq, phases_fr, info = [], [], [], [], []
     fy = np.fft.fftfreq(ny)[:, None] * ny
     fx = np.fft.fftfreq(nx)[None, :] * nx
     fr = np.hypot(fy, fx)
@@ -83,10 +83,11 @@ def estimate_patterns(raw, min_period=3.0, max_period=12.0):
         ks.append((f0 / ny, f1 / nx))
         phases.append(2 * np.pi * j / nph + phi0 + eps * j)                 # measured (linear fit)
         phases_eq.append(2 * np.pi * j / nph + phi0 + eps * (nph - 1) / 2)  # equally spaced, same mean phase
+        phases_fr.append(2 * np.pi * j / nph + psi)                         # measured frame by frame
         info.append(dict(angle=a, k_cycles_per_px=(f0 / ny, f1 / nx), period_px=1 / np.hypot(f0 / ny, f1 / nx),
                          direction_deg=float(np.degrees(np.arctan2(f1, f0))), phi0=float(phi0),
                          step_error_deg=float(np.degrees(eps)), phase_resid_rms_deg=float(np.degrees(res.std()))))
-    return np.array(ks), np.array(phases), np.array(phases_eq), info
+    return np.array(ks), np.array(phases), np.array(phases_eq), np.array(phases_fr), info
 
 
 def otf_circ(kr, kc):
@@ -160,31 +161,47 @@ class PeakMaskRecon:
         idc2 = np.sqrt((2.0 / self.nph ** 2) * np.einsum('ijk,ijk->jk', d, d))
         return a - alpha * a.mean(0) + idc2
 
-    def run(self, keep_stacks=False, mu='auto', measure_modulation=True, p1=None, measured_phases=False,
-            lockin_alpha=None):
+    def run(self, keep_stacks=False, mu='auto', measure_modulation=True, p1=None, phase_mode='frame',
+            lockin_alpha=None, ghost_correction='subtract'):
         # pattern parameters come from the plain offset-subtracted data
-        self.k, self.phase_meas, self.phase_eq, self.pinfo = estimate_patterns(self.raw)
+        self.k, self.phase_lin, self.phase_eq, self.phase_frame, self.pinfo = estimate_patterns(self.raw)
         data = self.raw if lockin_alpha is None else np.stack([self.lockin_demod(a, lockin_alpha)
                                                                for a in range(self.nang)])
         self.up = fft_upsample2(data.reshape(-1, self.n0, self.n0)).reshape(self.nang, self.nph, self.n, self.n)
-        # Equally spaced mask phases make sum_j exp(i*n*theta_j) vanish exactly, so the unmodulated (zero-order)
-        # image leaves no ghost at the pattern frequency; the small step error of the data costs < 1 % of the
-        # first-order signal. The measured phases can be selected instead.
-        self.phase = self.phase_meas if measured_phases else self.phase_eq
+        # 'frame': measured phase of every frame (the phase steps are not uniform: residuals of up to +-20 deg),
+        # the patterns then overlap the pattern in each frame. 'equal': equally spaced steps, which cancel the
+        # zero-order ghost of the 10-phase sum exactly but misplace the mask by the step error of each frame.
+        self.phase = dict(frame=self.phase_frame, equal=self.phase_eq, linear=self.phase_lin)[phase_mode]
+        if phase_mode == 'frame':
+            self.refine_frame_phases()
         self.angle_sum, self.patterns, self.filtered = [], [], []
         frac = []
+        self.weights = np.array([self.frame_weights(a) if ghost_correction == 'weights' else np.ones(self.nph)
+                                 for a in range(self.nang)])
         for a in range(self.nang):
             car = self.carrier(self.k[a])
             y = np.zeros((self.n, self.n), np.float64)
+            if ghost_correction == 'subtract':
+                comp = self.lsq_components(a)                                  # c0, Cr, Ci (zero and first order)
+                y_model = np.zeros((self.n, self.n), np.float64)
             for j in range(self.nph):
                 pat = 0.5 * (1 + np.cos(car + np.float32(self.phase[a, j])))    # sinusoidal pattern image
                 msk = self.mask_values(pat)                                    # peaks of the sine wave only
                 filt = self.up[a, j] * msk                                     # masked raw frame
-                y += filt
+                y += self.weights[a, j] * filt
+                if ghost_correction == 'subtract':
+                    nu = self.phase[a, j] - self.phase[a, 0]
+                    y_model += msk * (comp[0] + 2 * (comp[1] * np.cos(nu) - comp[2] * np.sin(nu)))
                 frac.append(float((msk > 0).mean()))
                 if keep_stacks:
                     self.patterns.append((pat * 255).astype(np.uint8))
                     self.filtered.append(filt.astype(np.float32))
+            if ghost_correction == 'subtract':
+                # replace the actual masked zero + first order by the ideal one (equally spaced phases):
+                # N*w0*c0 + 2*N*w1*c1, c1 = envelope of the first order with the carrier removed
+                kappa = car.astype(np.float64) + self.phase[a, 0]
+                c1 = np.real((comp[1] + 1j * comp[2]) * np.exp(-1j * kappa))
+                y += self.nph * (self.mask_harmonics(0) * comp[0] + 2 * self.mask_harmonics(1) * c1) - y_model
             self.angle_sum.append(y)
         self.mask_fraction = float(np.mean(frac))
         self.p1 = np.array([self.estimate_modulation(a) if (measure_modulation and p1 is None) else (p1 or 0.0)
@@ -192,15 +209,112 @@ class PeakMaskRecon:
         self.wiener(mu)
         return self
 
+    def lsq_components(self, a):
+        """Zero order c0 and first order C = Cr + i Ci (carrier included) of angle a from the 10 frames, least squares
+        with the true frame phases:  I_j = c0 + 2 Re(C exp(i nu_j)),  nu_j = phase_j - phase_0."""
+        nu = self.phase[a] - self.phase[a][0]
+        dmat = np.c_[np.ones(self.nph), 2 * np.cos(nu), -2 * np.sin(nu)]
+        return np.tensordot(np.linalg.pinv(dmat), self.up[a].astype(np.float64), axes=(1, 0))
+
+    def frame_weights(self, a, orders=2):
+        """Per-frame weights of the sum that null the zero-order leakage. With unequally spaced frame phases
+        sum_j exp(i n theta_j) != 0, so the unmodulated image (times mask harmonic n) leaves a ghost at n times the
+        pattern frequency. The minimum-norm correction of the unit weights with sum_j b_j exp(i n theta_j) = 0 for
+        n = 1..orders and sum_j b_j = nph is used. orders=2 removes the ghosts at f and 2f (the 2f ghost of a ramp
+        mask is as large as the one at f); the weights stay within about 0.8..1.25 (0.5..1.5 for the angle with the
+        largest phase errors), which costs ~4 % noise variance."""
+        th = self.phase[a]
+        rows = [np.ones(self.nph)]
+        for n in range(1, orders + 1):
+            rows += [np.cos(n * th), np.sin(n * th)]
+        c = np.array(rows)
+        t = np.zeros(len(rows))
+        t[0] = self.nph
+        return np.ones(self.nph) + c.T @ np.linalg.solve(c @ c.T, t - c @ np.ones(self.nph))
+
+    def refine_frame_phases(self):
+        """One refinement pass on the interpolated grid: the phase of every frame demodulated with its generated
+        pattern is the remaining offset (pattern fitted on the windowed raw grid); add it to the pattern phase."""
+        self.phase = self.phase.copy()
+        for a in range(self.nang):
+            car = self.carrier(self.k[a]).astype(np.float64)
+            for j in range(self.nph):
+                d = self.up[a, j].astype(np.float64)
+                z = np.sum((d - d.mean()) * np.exp(-1j * (car + self.phase[a, j])))
+                self.phase[a, j] += np.angle(z)
+
+    def check_patterns(self, tiles=8, scan=True, shifts=np.arange(-1.0, 1.0001, 0.1)):
+        """Sub-pixel check of the generated sinusoidal patterns against the pattern in the raw images.
+        (1) Per frame, the frame is demodulated with the generated pattern: the phase of the result is the residual
+            phase between image pattern and generated pattern (shift = phase / (2 pi |k|) along k).
+        (2) Per angle, the residual phase map over a tiles x tiles grid is fitted with a plane: its gradient is the
+            error of the wave vector (phase drift across the field), the residual scatter is compared with the
+            scatter expected from noise (independent top/bottom and left/right half-image estimates).
+        (3) scan: the actual pattern image is shifted along k by sub-pixel steps and the correlation with the frame
+            is maximised (parabolic peak); independent of the demodulation in (1).
+        Shifts are in pixels of the interpolated grid (half the raw pixel)."""
+        n = self.n
+        yy, xx = np.indices((n, n))
+        halves = [yy < n // 2, yy >= n // 2, xx < n // 2, xx >= n // 2]
+        ts = n // tiles
+        ty, tx = np.indices((tiles, tiles))
+        cy, cx = (ty + .5) * ts - n / 2, (tx + .5) * ts - n / 2
+        rep = []
+        for a in range(self.nang):
+            kk = np.hypot(*self.k[a]) / 2                       # cycles per interpolated pixel
+            car = self.carrier(self.k[a]).astype(np.float64)
+            glob, scan_pk, zt, hz = [], [], np.zeros((tiles, tiles), complex), [[], []]
+            for j in range(self.nph):
+                d = self.up[a, j].astype(np.float64)
+                d = d - d.mean()
+                e = np.exp(-1j * (car + self.phase[a, j]))
+                prod = d * e
+                g = prod.sum()
+                glob.append(g)
+                zt += (prod * np.exp(-1j * np.angle(g)))[:tiles * ts, :tiles * ts].reshape(tiles, ts, tiles, ts).sum((1, 3))
+                for h in range(2):                              # noise of the phase estimate from half images
+                    z1 = prod[halves[2 * h]].sum()
+                    z2 = prod[halves[2 * h + 1]].sum()
+                    hz[h].append(np.angle(z1 * np.conj(z2)))
+                if scan:
+                    sig = d[::2, ::2]
+                    c = []
+                    for sh in shifts:
+                        pat = np.cos(car + self.phase[a, j] + 2 * np.pi * kk * sh)[::2, ::2]
+                        c.append(np.corrcoef(sig.ravel(), pat.ravel())[0, 1])
+                    c = np.array(c)
+                    i = int(np.clip(c.argmax(), 1, len(c) - 2))
+                    den = c[i - 1] - 2 * c[i] + c[i + 1]
+                    scan_pk.append(shifts[i] + 0.5 * (c[i - 1] - c[i + 1]) / den * (shifts[1] - shifts[0]) if den else np.nan)
+            glob = np.array(glob)
+            dphi = np.angle(glob)
+            ph, amp = np.angle(zt), np.abs(zt)
+            ok = amp > 0.3 * np.median(amp)
+            A = np.c_[np.ones(ok.sum()), cy[ok], cx[ok]]
+            sol, *_ = np.linalg.lstsq(A * amp[ok][:, None], ph[ok] * amp[ok], rcond=None)
+            resid = ph[ok] - A @ sol
+            # tile noise expected from the half-image scatter (tile = 1/tiles^2 of the area, half = 1/2)
+            noise_half = np.sqrt(np.mean(np.concatenate(hz) ** 2) / 2)
+            rep.append(dict(angle=a, frame_phase_residual_deg=np.degrees(dphi).round(2).tolist(),
+                            frame_shift_px=(dphi / (2 * np.pi * kk)).round(3).tolist(),
+                            max_abs_shift_px=float(np.abs(dphi / (2 * np.pi * kk)).max()),
+                            scan_shift_px=np.round(scan_pk, 3).tolist() if scan else None,
+                            drift_deg_per_fov=(float(np.degrees(sol[1]) * n), float(np.degrees(sol[2]) * n)),
+                            wavevector_error_cycles_per_px=(float(sol[1] / (2 * np.pi) * 2), float(sol[2] / (2 * np.pi) * 2)),
+                            tile_resid_rms_deg=float(np.degrees(resid.std())),
+                            tile_noise_expected_deg=float(np.degrees(noise_half * np.sqrt(tiles ** 2 / 2)))))
+        self.pattern_check = rep
+        return rep
+
     def estimate_modulation(self, a, band=(36, 96)):
         """First-order modulation depth p1 (cosine amplitude relative to the object) from the overlap of the
         shifted-back first-order component with the zero order, restricted to a band of object frequencies where
         the object has signal (the camera offset and unmodulated haze dilute the lowest frequencies)."""
-        j = np.arange(self.nph)
-        nu = self.phase[a] - self.phase[a][0]                         # demodulation phases 2*pi*j/nph + j*eps
-        up = self.up[a].astype(np.float64)
-        c0 = up.mean(0)
-        c1 = np.tensordot(np.exp(-1j * nu), up, axes=(0, 0)) / self.nph
+        # least squares with the true (non-uniform) phases: the zero order does not leak into the first order as it
+        # does for a plain Fourier sum over unequally spaced phases
+        u3 = self.lsq_components(a)
+        c0 = u3[0]
+        c1 = u3[1] + 1j * u3[2]
         car = 2 * np.pi * (self.k[a][0] * self.u[:, None] + self.k[a][1] * self.u[None, :]) + self.phase[a][0]
         c1b = c1 * np.exp(-1j * car)                                  # envelope, carrier removed
         w = np.outer(tukey(self.n, 0.1), tukey(self.n, 0.1))
@@ -279,14 +393,24 @@ if __name__ == '__main__':
     mask = 'ramp'               # 'binary': hard threshold (leaves a 10th-harmonic ripple in the 10-phase sum)
                                 # 'ramp': threshold, weighted linearly from 0 (threshold) to 1 (pattern peak)
     mu = 'auto'                 # 'auto': noise / object power estimated from the data; float: constant Wiener parameter
-    measured_phases = False     # True: use the fitted per-frame phases for the masks instead of equally spaced ones
+    phase_mode = 'frame'        # pattern phase: 'frame' measured per frame, 'linear' linear fit, 'equal' equally spaced
+    ghost_correction = 'subtract'   # unequally spaced frame phases leave a zero-order ghost in the sum of the masked frames:
+                                    # 'subtract' removes it exactly, 'weights' balances the frame weights, None: plain sum
     lockin_alpha = None         # lock-in demodulation of the raw data before masking, e.g. 0.8 (None: off)
     p1 = None                   # fix the first-order modulation depth instead of measuring it
     save_stacks = True          # also write the 60 patterns and the 60 masked frames
 
     out.mkdir(parents=True, exist_ok=True)
     rec = PeakMaskRecon(tf.imread(fn), n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
-    rec.run(keep_stacks=save_stacks, mu=mu, p1=p1, measured_phases=measured_phases, lockin_alpha=lockin_alpha)
+    rec.run(keep_stacks=save_stacks, mu=mu, p1=p1, phase_mode=phase_mode, lockin_alpha=lockin_alpha,
+            ghost_correction=ghost_correction)
+
+    check = rec.check_patterns()
+    print('pattern overlap check (shifts in pixels of the interpolated grid, %.1f nm):' % (pixel_size / 2 * 1000))
+    for q in check:
+        print('  angle %d: max |shift| %.3f px, correlation-scan shift rms %.3f px, field drift (y, x) %.1f / %.1f deg'
+              % (q['angle'], q['max_abs_shift_px'], np.sqrt(np.mean(np.square(q['scan_shift_px']))),
+                 *q['drift_deg_per_fov']))
 
     f32 = lambda x: np.asarray(x, np.float32)
     tf.imwrite(out / 'widefield_interp.tif', f32(rec.wf), photometric='minisblack')
@@ -299,6 +423,8 @@ if __name__ == '__main__':
         tf.imwrite(out / 'patterns_uint8.tif', np.array(rec.patterns), photometric='minisblack')
         tf.imwrite(out / 'filtered_frames.tif', np.array(rec.filtered), photometric='minisblack')
     summary = dict(pixel_size_um=pixel_size / 2, mask_fraction=rec.mask_fraction, mask=mask, threshold=threshold,
-                   lockin_alpha=lockin_alpha, mu=mu, p1=rec.p1.tolist(), patterns=rec.pinfo)
+                   lockin_alpha=lockin_alpha, phase_mode=phase_mode, ghost_correction=ghost_correction,
+                   frame_weights=rec.weights.round(4).tolist(), mu=mu, p1=rec.p1.tolist(), patterns=rec.pinfo,
+                   pattern_check=check)
     (out / 'summary.json').write_text(json.dumps(summary, indent=1, default=float))
     print(json.dumps(summary, indent=1, default=float))
