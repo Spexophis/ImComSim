@@ -161,8 +161,14 @@ class PeakMaskRecon:
         idc2 = np.sqrt((2.0 / self.nph ** 2) * np.einsum('ijk,ijk->jk', d, d))
         return a - alpha * a.mean(0) + idc2
 
-    def run(self, keep_stacks=False, mu='auto', measure_modulation=True, p1=None, phase_mode='frame',
-            lockin_alpha=None, ghost_correction='subtract', otf_model='harmonic', resolution_along=0.040):
+    def run(self, mu='auto', **kw):
+        """prepare() (interpolation, patterns, masks, angle sums, modulation depth) followed by wiener()."""
+        self.prepare(**kw)
+        self.wiener(mu)
+        return self
+
+    def prepare(self, keep_stacks=False, measure_modulation=True, p1=None, phase_mode='frame',
+                lockin_alpha=None, ghost_correction='subtract', otf_model='harmonic', resolution_along=0.040):
         self.otf_model, self.resolution_along = otf_model, resolution_along
         # pattern parameters come from the plain offset-subtracted data
         self.k, self.phase_lin, self.phase_eq, self.phase_frame, self.pinfo = estimate_patterns(self.raw)
@@ -207,7 +213,7 @@ class PeakMaskRecon:
         self.mask_fraction = float(np.mean(frac))
         self.p1 = np.array([self.estimate_modulation(a) if (measure_modulation and p1 is None) else (p1 or 0.0)
                             for a in range(self.nang)])
-        self.wiener(mu)
+        self.wf = self.up.mean((0, 1))
         return self
 
     def lsq_components(self, a):
@@ -354,52 +360,166 @@ class PeakMaskRecon:
         perp = -d[1] * ky + d[0] * kx
         return otf_circ(np.hypot(par / s, perp), self.kc)
 
+    def transfer(self, a):
+        """Transfer function of the angle-a image used in the Wiener filter."""
+        return self.effective_otf(a) if self.otf_model == 'harmonic' else self.anisotropic_otf(a, self.resolution_along)
+
     def wiener(self, mu):
-        """Wiener combination  S = sum_a conj(T_a) Y_a / (sum_a |T_a|^2 + NSR).
-        mu = 'auto': NSR(kappa) = noise power / object power, both estimated from the data (noise from the
-        frequencies outside every effective support but below the raw Nyquist, object power from the radially averaged angle-image
-        spectra divided by the effective transfer functions). mu = float: constant NSR = mu**2."""
+        """Wiener combination of the angle images, see ``wiener_combine``."""
         win = np.outer(tukey(self.n, 0.05), tukey(self.n, 0.05))
         fs, ts = [], []
-        self.otf_eff = []
         for a in range(self.nang):
             y = self.angle_sum[a]
             y = y / y.mean()                                          # common DC level: object DC = 1
             fs.append(fft2(y * win, workers=WORKERS))
-            ts.append(self.effective_otf(a) if self.otf_model == 'harmonic'
-                      else self.anisotropic_otf(a, self.resolution_along))
+            ts.append(self.transfer(a))
         self.otf_eff = ts
-        t2 = sum(np.abs(t) ** 2 for t in ts)
-        if mu == 'auto':
-            # noise: bins outside every effective support but inside the band that still carries (interpolated) noise,
-            # i.e. below the raw Nyquist frequency (bin n/4); beyond it the zero-padded spectrum holds no noise at all
-            far = (t2 < 1e-4) & (self.bins < 0.97 * self.n / 4)
-            if far.sum() < 2000:                                       # supports cover the whole band: take the
-                far = (self.bins > 0.9 * self.n / 4) & (self.bins < 0.97 * self.n / 4)   # edge below raw Nyquist
-            noise = float(np.mean([np.mean(np.abs(f[far]) ** 2) for f in fs]))
-            pf = np.mean([np.abs(f) ** 2 for f in fs], axis=0)
-            rb = np.minimum(np.round(self.bins).astype(int), self.n // 2)
-            cnt = np.maximum(np.bincount(rb.ravel(), minlength=self.n // 2 + 1), 1)
-            prof = lambda x: np.bincount(rb.ravel(), x.ravel(), minlength=self.n // 2 + 1) / cnt
-            ps = (prof(pf) - noise) / np.maximum(prof(t2) / self.nang, 1e-6)
-            ps = np.convolve(np.maximum(ps, noise / 1e3), np.ones(5) / 5, mode='same')
-            ps = np.minimum.accumulate(np.maximum(ps, noise / 1e3))    # object power decreases with frequency
-            nsr = (noise / ps)[rb]
-            self.noise_power = noise
-        else:
-            nsr = mu ** 2
-        den = t2 + nsr
-        self.S = sum(np.conj(t) * f for t, f in zip(ts, fs)) / den
+        self.S, self.otf_total, noise = wiener_combine(fs, ts, self.bins, mu, per_image_noise=False)
+        self.noise_power = float(np.mean(noise)) if noise is not None else None
         self.final = np.real(ifft2(self.S, workers=WORKERS))
         self.final *= self.up.mean()                                  # restore counts (offset-subtracted)
-        self.wf = self.up.mean((0, 1))
-        self.otf_total = t2
+
+
+def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False):
+    """Wiener combination of images with known transfer functions:
+        S = sum_i conj(T_i) F_i / n_i / (sum_i |T_i|^2 / n_i + 1 / P_S(kappa)).
+    F_i: Fourier transform of image i (normalised to DC = 1), T_i: its transfer function (T(0) = 1), n_i: its noise
+    power per frequency bin, estimated from the bins outside every support but below the raw Nyquist frequency
+    (per image if per_image_noise, else the common mean), P_S: object power, estimated from the radially averaged
+    whitened spectra divided by the transfer functions (mu = 'auto'). mu = float: constant NSR = mu**2 and equal
+    weights. Returns S, sum_i |T_i|^2 and the noise powers (None for a constant mu)."""
+    n = fs[0].shape[0]
+    t2 = sum(np.abs(t) ** 2 for t in ts)
+    if mu != 'auto':
+        return sum(np.conj(t) * f for t, f in zip(ts, fs)) / (t2 + mu ** 2), t2, None
+    # noise: bins outside every effective support but inside the band that still carries (interpolated) noise,
+    # i.e. below the raw Nyquist frequency (bin n/4); beyond it the zero-padded spectrum holds no noise at all
+    far = (t2 < 1e-4) & (bins < 0.97 * n / 4)
+    if far.sum() < 2000:                                               # supports cover the whole band: take the
+        far = (bins > 0.9 * n / 4) & (bins < 0.97 * n / 4)             # edge below raw Nyquist
+    noise = np.array([np.mean(np.abs(f[far]) ** 2) for f in fs])
+    if not per_image_noise:
+        noise = np.full(len(fs), noise.mean())
+    g = [f / np.sqrt(z) for f, z in zip(fs, noise)]                    # whitened data and transfer functions
+    u = [t / np.sqrt(z) for t, z in zip(ts, noise)]
+    u2 = sum(np.abs(x) ** 2 for x in u)
+    pg = np.mean([np.abs(x) ** 2 for x in g], axis=0)
+    rb = np.minimum(np.round(bins).astype(int), n // 2)
+    cnt = np.maximum(np.bincount(rb.ravel(), minlength=n // 2 + 1), 1)
+    prof = lambda x: np.bincount(rb.ravel(), x.ravel(), minlength=n // 2 + 1) / cnt
+    nm = float(noise.mean())
+    ps = (prof(pg) - 1) * nm / np.maximum(prof(u2) / len(fs) * nm, 1e-6)
+    ps = np.convolve(np.maximum(ps, nm / 1e3), np.ones(5) / 5, mode='same')
+    ps = np.minimum.accumulate(np.maximum(ps, nm / 1e3))               # object power decreases with frequency
+    s = sum(np.conj(x) * y for x, y in zip(u, g)) / (u2 + (nm / ps)[rb] / nm)
+    return s, t2, noise
+
+
+class MultiStackRecon:
+    """Several acquisitions (stacks) of the same field. Two ways to use them:
+      'combine' (recommended): every stack gets its own wave vectors, per-frame phases, patterns and masked angle
+          sums; the angle sums are plain images of the object (no pattern phase left), so they are registered with
+          sub-pixel accuracy (phase correlation of the widefield images, applied as a Fourier-space shift) and all
+          stacks x angles are combined in one Wiener filter, every image weighted by 1 / its noise power. Bleaching
+          is normalised by the DC level of each angle image.
+      'raw': average the raw frames (frame i of every stack) first. Only valid if the pattern phases and wave vectors
+          agree between the stacks and the sample did not move, see ``compare_patterns``."""
+
+    def __init__(self, stacks, n_angles, n_phases, pixel_size, na, wavelength, offset=100.0, threshold=0.85,
+                 mask='ramp'):
+        self.args = (n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
+        self.stacks = stacks
+        self.recs = [PeakMaskRecon(s, *self.args) for s in stacks]
+        self.nstack = len(stacks)
+        self.nang, self.n = n_angles, 2 * stacks[0].shape[-1]
+        self.n0 = stacks[0].shape[-1]
+
+    def compare_patterns(self, max_deg=5.0):
+        """Compare wave vectors and per-frame pattern phases of stack s with stack 0 (per angle):
+        drift = phase difference accumulated over the field by the wave-vector difference [deg],
+        offset = mean phase difference (pattern or sample shift along k) [deg and raw px],
+        scatter = rms of the per-frame phase difference about its mean [deg].
+        raw averaging is only sensible if all three are below max_deg."""
+        est = [estimate_patterns(r.raw) for r in self.recs]
+        rep = []
+        for s in range(1, self.nstack):
+            for a in range(self.nang):
+                dk = np.array(est[s][0][a]) - np.array(est[0][0][a])
+                dphi = np.angle(np.exp(1j * (est[s][3][a] - est[0][3][a])))
+                off = np.angle(np.mean(np.exp(1j * dphi)))
+                scat = np.angle(np.exp(1j * (dphi - off))).std()
+                kk = np.hypot(*est[0][0][a])
+                rep.append(dict(stack=s, angle=a, drift_deg=float(np.degrees(2 * np.pi * np.hypot(*dk) * self.n0)),
+                                offset_deg=float(np.degrees(off)), offset_px=float(off / (2 * np.pi * kk)),
+                                scatter_deg=float(np.degrees(scat))))
+        self.pattern_comparison = rep
+        self.raw_average_ok = all(max(abs(q['drift_deg']), abs(q['offset_deg']), q['scatter_deg']) < max_deg
+                                  for q in rep)
+        return rep
+
+    def run(self, mode='combine', mu='auto', register=True, upsample=50, **kw):
+        if mode == 'raw':
+            return self.run_raw(mu=mu, **kw)
+        for r in self.recs:
+            r.prepare(**kw)
+        self.rec = self.recs[0]
+        self.shifts = [np.zeros(2)] + [self.register(r, upsample) if register else np.zeros(2) for r in self.recs[1:]]
+        n = self.n
+        fy = np.fft.fftfreq(n)[:, None]
+        fx = np.fft.fftfreq(n)[None, :]
+        win = np.outer(tukey(n, 0.05), tukey(n, 0.05))
+        fs, ts, self.angle_sum, wfs = [], [], [], []
+        for r, d in zip(self.recs, self.shifts):
+            ramp = np.exp(-2j * np.pi * (fy * d[0] + fx * d[1]))        # shift by +d (registers onto stack 0)
+            wfs.append(np.real(ifft2(fft2(r.wf, workers=WORKERS) * ramp, workers=WORKERS)))
+            for a in range(self.nang):
+                y = r.angle_sum[a] / r.angle_sum[a].mean()
+                self.angle_sum.append(np.real(ifft2(fft2(y, workers=WORKERS) * ramp, workers=WORKERS)))
+                fs.append(fft2(y * win, workers=WORKERS) * ramp)
+                ts.append(r.transfer(a))
+        self.S, self.otf_total, noise = wiener_combine(fs, ts, self.rec.bins, mu, per_image_noise=True)
+        self.noise_power = None if noise is None else noise.reshape(self.nstack, self.nang).mean(1).tolist()
+        self.final = np.real(ifft2(self.S, workers=WORKERS)) * self.recs[0].up.mean()   # counts of stack 0 (reference)
+        self.wf = np.mean(wfs, axis=0)
+        self.p1 = np.array([r.p1 for r in self.recs])
+        return self
+
+    def register(self, rec, upsample=50, sigma=2.0):
+        """Shift [rows, cols] of the interpolated grid that registers the widefield image of ``rec`` onto stack 0:
+        plain (not phase-normalised) cross-correlation of band-passed widefield images (difference of Gaussians,
+        sigma .. 6 sigma interpolated px, i.e. no low-frequency background and no pixel noise), sub-pixel by
+        1 / upsample px. The phase-normalised correlation is dominated by noise for these images."""
+        from skimage.registration import phase_cross_correlation
+        from scipy.ndimage import gaussian_filter
+        band = lambda x: gaussian_filter(x, sigma) - gaussian_filter(x, 6 * sigma)
+        shift, _, _ = phase_cross_correlation(band(self.recs[0].wf), band(rec.wf), upsample_factor=upsample,
+                                              normalization=None)
+        return np.asarray(shift, float)
+
+    def run_raw(self, mu='auto', normalise=True, **kw):
+        """Average the raw frames (offset kept) of all stacks, then reconstruct the mean stack."""
+        offset = self.args[5]
+        ref = (self.stacks[0].astype(np.float64) - offset).mean()
+        mean = np.mean([(s.astype(np.float64) - offset) * (ref / (s.astype(np.float64) - offset).mean() if normalise else 1)
+                        for s in self.stacks], axis=0) + offset
+        self.rec = PeakMaskRecon(mean, *self.args)
+        self.rec.run(mu=mu, **kw)
+        for name in ('final', 'wf', 'S', 'otf_total', 'noise_power', 'p1', 'angle_sum'):
+            setattr(self, name, getattr(self.rec, name))
+        self.shifts = None
+        return self
 
 
 if __name__ == '__main__':
-    # ---- test on the 6-angle x 10-phase 2D NLSIM stack ---------------------------------------------------------
-    fn = r"812bec86-2D_NLSIM_mito_000000_ids_0_59-1.tif"   # raw stack, (60, 496, 496), angle-major
+    # ---- test on the 6-angle x 10-phase 2D NLSIM stack(s) ------------------------------------------------------
+    fns = [r"812bec86-2D_NLSIM_mito_000000_ids_0_59-1.tif"]   # raw stack(s), (60, 496, 496), angle-major.
+    # Several acquisitions of the same field: list all files, e.g. fns = [r"stack1.tif", r"stack2.tif", r"stack3.tif",
+    # r"stack4.tif"]; they are combined in the way selected by multi_mode.
     out = Path(r"nlsim_peak_mask_results")                 # output folder
+    multi_mode = 'combine'      # several stacks. 'combine': reconstruct every stack (own patterns), register the angle
+                                # images and combine all of them in one Wiener filter (recommended).
+                                # 'raw': average the raw frames first (only if compare_patterns says it is safe)
+    register = True             # sub-pixel registration of the stacks before combining
     n_angles = 6
     n_phases = 10
     pixel_size = 0.069          # raw pixel size [um]
@@ -418,34 +538,59 @@ if __name__ == '__main__':
     resolution_along = 0.080    # [um] resolution along the pattern direction for otf_model='anisotropic'
     lockin_alpha = None         # lock-in demodulation of the raw data before masking, e.g. 0.8 (None: off)
     p1 = None                   # fix the first-order modulation depth instead of measuring it
-    save_stacks = True          # also write the 60 patterns and the 60 masked frames
+    save_stacks = True          # single stack only: also write the 60 patterns and the 60 masked frames
 
+    kw = dict(p1=p1, phase_mode=phase_mode, lockin_alpha=lockin_alpha, ghost_correction=ghost_correction,
+              otf_model=otf_model, resolution_along=resolution_along)
+    args = (n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
     out.mkdir(parents=True, exist_ok=True)
-    rec = PeakMaskRecon(tf.imread(fn), n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
-    rec.run(keep_stacks=save_stacks, mu=mu, p1=p1, phase_mode=phase_mode, lockin_alpha=lockin_alpha,
-            ghost_correction=ghost_correction, otf_model=otf_model, resolution_along=resolution_along)
-
-    check = rec.check_patterns()
-    print('pattern overlap check (shifts in pixels of the interpolated grid, %.1f nm):' % (pixel_size / 2 * 1000))
-    for q in check:
-        print('  angle %d: max |shift| %.3f px, correlation-scan shift rms %.3f px, field drift (y, x) %.1f / %.1f deg'
-              % (q['angle'], q['max_abs_shift_px'], np.sqrt(np.mean(np.square(q['scan_shift_px']))),
-                 *q['drift_deg_per_fov']))
-
+    stacks = [tf.imread(fn) for fn in fns]
+    summary = dict(files=[str(f) for f in fns], pixel_size_um=pixel_size / 2, mask=mask, threshold=threshold,
+                   lockin_alpha=lockin_alpha, phase_mode=phase_mode, ghost_correction=ghost_correction,
+                   otf_model=otf_model, resolution_along=resolution_along, mu=mu)
     f32 = lambda x: np.asarray(x, np.float32)
+
+    if len(stacks) == 1:
+        rec = PeakMaskRecon(stacks[0], *args)
+        rec.run(keep_stacks=save_stacks, mu=mu, **kw)
+        checks = [rec.check_patterns()]
+        recs = [rec]
+        summary.update(mask_fraction=rec.mask_fraction, frame_weights=rec.weights.round(4).tolist(),
+                       p1=rec.p1.tolist(), patterns=rec.pinfo)
+        if save_stacks:
+            tf.imwrite(out / 'patterns_uint8.tif', np.array(rec.patterns), photometric='minisblack')
+            tf.imwrite(out / 'filtered_frames.tif', np.array(rec.filtered), photometric='minisblack')
+    else:
+        rec = MultiStackRecon(stacks, *args)
+        comparison = rec.compare_patterns()
+        print('pattern comparison with stack 0 (drift over the field, mean phase offset, per-frame scatter):')
+        for q in comparison:
+            print('  stack %d angle %d: drift %.1f deg, offset %.1f deg (%.3f raw px), scatter %.1f deg'
+                  % (q['stack'], q['angle'], q['drift_deg'], q['offset_deg'], q['offset_px'], q['scatter_deg']))
+        print('raw averaging is %s' % ('safe' if rec.raw_average_ok else 'NOT safe (use multi_mode = "combine")'))
+        rec.run(mode=multi_mode, mu=mu, register=register, **kw)
+        recs = rec.recs if multi_mode == 'combine' else [rec.rec]
+        checks = [r.check_patterns() for r in recs]
+        summary.update(multi_mode=multi_mode, register=register, pattern_comparison=comparison,
+                       raw_average_ok=bool(rec.raw_average_ok), registration_shifts_interp_px=
+                       None if rec.shifts is None else [np.asarray(x).tolist() for x in rec.shifts],
+                       noise_power_per_stack=rec.noise_power if multi_mode == 'combine' else None,
+                       p1=np.asarray(rec.p1).tolist())
+
+    for si, check in enumerate(checks):
+        print('pattern overlap check%s (shifts in pixels of the interpolated grid, %.1f nm):'
+              % ('' if len(checks) == 1 else ' stack %d' % si, pixel_size / 2 * 1000))
+        for q in check:
+            print('  angle %d: max |shift| %.3f px, correlation-scan shift rms %.3f px, field drift (y, x) %.1f / %.1f deg'
+                  % (q['angle'], q['max_abs_shift_px'], np.sqrt(np.mean(np.square(q['scan_shift_px']))),
+                     *q['drift_deg_per_fov']))
+    summary['pattern_check'] = checks
+
     tf.imwrite(out / 'widefield_interp.tif', f32(rec.wf), photometric='minisblack')
     tf.imwrite(out / 'angle_sums.tif', f32(rec.angle_sum), photometric='minisblack')
     tf.imwrite(out / 'wiener_combined.tif', f32(rec.final), photometric='minisblack')
     tf.imwrite(out / 'effective_otf_total.tif', f32(np.fft.fftshift(rec.otf_total)), photometric='minisblack')
     tf.imwrite(out / 'recon_spectrum_log.tif', f32(np.log10(np.abs(np.fft.fftshift(rec.S)) + 1e-6)),
                photometric='minisblack')
-    if save_stacks:
-        tf.imwrite(out / 'patterns_uint8.tif', np.array(rec.patterns), photometric='minisblack')
-        tf.imwrite(out / 'filtered_frames.tif', np.array(rec.filtered), photometric='minisblack')
-    summary = dict(pixel_size_um=pixel_size / 2, mask_fraction=rec.mask_fraction, mask=mask, threshold=threshold,
-                   lockin_alpha=lockin_alpha, phase_mode=phase_mode, ghost_correction=ghost_correction, otf_model=otf_model,
-                   resolution_along=resolution_along,
-                   frame_weights=rec.weights.round(4).tolist(), mu=mu, p1=rec.p1.tolist(), patterns=rec.pinfo,
-                   pattern_check=check)
     (out / 'summary.json').write_text(json.dumps(summary, indent=1, default=float))
     print(json.dumps(summary, indent=1, default=float))
