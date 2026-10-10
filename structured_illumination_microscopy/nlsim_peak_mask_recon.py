@@ -162,7 +162,8 @@ class PeakMaskRecon:
         return a - alpha * a.mean(0) + idc2
 
     def run(self, keep_stacks=False, mu='auto', measure_modulation=True, p1=None, phase_mode='frame',
-            lockin_alpha=None, ghost_correction='subtract'):
+            lockin_alpha=None, ghost_correction='subtract', otf_model='harmonic', resolution_along=0.040):
+        self.otf_model, self.resolution_along = otf_model, resolution_along
         # pattern parameters come from the plain offset-subtracted data
         self.k, self.phase_lin, self.phase_eq, self.phase_frame, self.pinfo = estimate_patterns(self.raw)
         data = self.raw if lockin_alpha is None else np.stack([self.lockin_demod(a, lockin_alpha)
@@ -340,6 +341,19 @@ class PeakMaskRecon:
                 t = t + wr * (self.shifted_otf(self.k[a], m) + self.shifted_otf(self.k[a], -m))
         return t / t.flat[0]
 
+    def anisotropic_otf(self, a, resolution):
+        """Analytic OTF of angle a with the given resolution [um] (= 1 / cutoff) along the pattern direction and the
+        diffraction-limited cutoff 2NA/lambda perpendicular to it: the circular-aperture OTF with the coordinate
+        along the pattern stretched by s = (1/resolution) / (2NA/lambda), i.e. an elliptical support.
+        T(kappa) = H(sqrt((kappa_par / s)^2 + kappa_perp^2))."""
+        s = (1.0 / resolution) / self.kc
+        f = np.fft.fftfreq(self.n, self.dx)
+        ky, kx = np.meshgrid(f, f, indexing='ij')
+        d = np.array(self.k[a]) / np.hypot(*self.k[a])
+        par = d[0] * ky + d[1] * kx
+        perp = -d[1] * ky + d[0] * kx
+        return otf_circ(np.hypot(par / s, perp), self.kc)
+
     def wiener(self, mu):
         """Wiener combination  S = sum_a conj(T_a) Y_a / (sum_a |T_a|^2 + NSR).
         mu = 'auto': NSR(kappa) = noise power / object power, both estimated from the data (noise from the
@@ -352,13 +366,16 @@ class PeakMaskRecon:
             y = self.angle_sum[a]
             y = y / y.mean()                                          # common DC level: object DC = 1
             fs.append(fft2(y * win, workers=WORKERS))
-            ts.append(self.effective_otf(a))
+            ts.append(self.effective_otf(a) if self.otf_model == 'harmonic'
+                      else self.anisotropic_otf(a, self.resolution_along))
         self.otf_eff = ts
         t2 = sum(np.abs(t) ** 2 for t in ts)
         if mu == 'auto':
             # noise: bins outside every effective support but inside the band that still carries (interpolated) noise,
             # i.e. below the raw Nyquist frequency (bin n/4); beyond it the zero-padded spectrum holds no noise at all
             far = (t2 < 1e-4) & (self.bins < 0.97 * self.n / 4)
+            if far.sum() < 2000:                                       # supports cover the whole band: take the
+                far = (self.bins > 0.9 * self.n / 4) & (self.bins < 0.97 * self.n / 4)   # edge below raw Nyquist
             noise = float(np.mean([np.mean(np.abs(f[far]) ** 2) for f in fs]))
             pf = np.mean([np.abs(f) ** 2 for f in fs], axis=0)
             rb = np.minimum(np.round(self.bins).astype(int), self.n // 2)
@@ -396,6 +413,9 @@ if __name__ == '__main__':
     phase_mode = 'frame'        # pattern phase: 'frame' measured per frame, 'linear' linear fit, 'equal' equally spaced
     ghost_correction = 'subtract'   # unequally spaced frame phases leave a zero-order ghost in the sum of the masked frames:
                                     # 'subtract' removes it exactly, 'weights' balances the frame weights, None: plain sum
+    otf_model = 'anisotropic'   # transfer function in the Wiener filter: 'harmonic' (mask harmonics x shifted OTF) or
+                                # 'anisotropic' (per angle: elliptical analytic OTF with resolution_along along the pattern)
+    resolution_along = 0.080    # [um] resolution along the pattern direction for otf_model='anisotropic'
     lockin_alpha = None         # lock-in demodulation of the raw data before masking, e.g. 0.8 (None: off)
     p1 = None                   # fix the first-order modulation depth instead of measuring it
     save_stacks = True          # also write the 60 patterns and the 60 masked frames
@@ -403,7 +423,7 @@ if __name__ == '__main__':
     out.mkdir(parents=True, exist_ok=True)
     rec = PeakMaskRecon(tf.imread(fn), n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
     rec.run(keep_stacks=save_stacks, mu=mu, p1=p1, phase_mode=phase_mode, lockin_alpha=lockin_alpha,
-            ghost_correction=ghost_correction)
+            ghost_correction=ghost_correction, otf_model=otf_model, resolution_along=resolution_along)
 
     check = rec.check_patterns()
     print('pattern overlap check (shifts in pixels of the interpolated grid, %.1f nm):' % (pixel_size / 2 * 1000))
@@ -423,7 +443,8 @@ if __name__ == '__main__':
         tf.imwrite(out / 'patterns_uint8.tif', np.array(rec.patterns), photometric='minisblack')
         tf.imwrite(out / 'filtered_frames.tif', np.array(rec.filtered), photometric='minisblack')
     summary = dict(pixel_size_um=pixel_size / 2, mask_fraction=rec.mask_fraction, mask=mask, threshold=threshold,
-                   lockin_alpha=lockin_alpha, phase_mode=phase_mode, ghost_correction=ghost_correction,
+                   lockin_alpha=lockin_alpha, phase_mode=phase_mode, ghost_correction=ghost_correction, otf_model=otf_model,
+                   resolution_along=resolution_along,
                    frame_weights=rec.weights.round(4).tolist(), mu=mu, p1=rec.p1.tolist(), patterns=rec.pinfo,
                    pattern_check=check)
     (out / 'summary.json').write_text(json.dumps(summary, indent=1, default=float))
