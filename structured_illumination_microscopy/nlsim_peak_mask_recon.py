@@ -96,10 +96,65 @@ def otf_circ(kr, kc):
     return (2 / np.pi) * (np.arccos(r) - r * np.sqrt(1 - r ** 2))
 
 
+def _neighbours(m, k_max):
+    """columns x-k and x+k (reflect) summed, for k = 1..k_max -> (k_max, ny, nx)"""
+    p = np.pad(m, ((0, 0), (k_max, k_max)), mode='reflect')
+    nx = m.shape[1]
+    return np.stack([p[:, k_max - k:k_max - k + nx] + p[:, k_max + k:k_max + k + nx] for k in range(1, k_max + 1)])
+
+
+def estimate_stripe_pattern(stack, axis=-1, k_max=4, iters=4):
+    """Per-line offset c and gain g of the fixed stripe pattern of a camera chip (columns: constant along y, profile
+    along x for axis=-1; axis=-2 for rows) from the phase-averaged image m = g * s + c of an offset-subtracted stack
+    (n, ny, nx). The smooth image s is predicted for every column from its k_max nearest neighbours on each side with
+    a symmetric interpolation kernel learned from the (stripe-corrected) image itself, then c and g follow from a
+    least-squares line per column. Iterated, so that the stripes of the neighbours are removed from the predictor.
+    Returns c (mean 0), g (mean 1) and the learned kernel."""
+    m = stack.mean(0)
+    if axis in (-2, 0):
+        m = m.T
+    c = np.zeros(m.shape[1])
+    g = np.ones(m.shape[1])
+    for _ in range(iters):
+        mc = (m - c) / g
+        a, *_ = np.linalg.lstsq(_neighbours(mc, k_max).reshape(k_max, -1).T, mc.ravel(), rcond=None)
+        s = np.tensordot(a, _neighbours(mc, k_max), axes=1)
+        sm, mm = s - s.mean(0), m - m.mean(0)
+        ss = np.maximum((sm ** 2).sum(0), 1e-12)
+        g_raw = (sm * mm).sum(0) / ss
+        # a column with little signal variance gives a noisy gain: shrink every gain towards 1 with the weight
+        # tau^2 / (tau^2 + var_col), var_col = variance of its least-squares estimate, tau = spread of the true gains
+        var_col = ((mm - g_raw * sm) ** 2).sum(0) / (m.shape[0] - 2) / ss
+        tau2 = max((1.4826 * np.median(np.abs(g_raw - np.median(g_raw)))) ** 2 - np.median(var_col), 1e-6)
+        g = np.clip(1 + tau2 / (tau2 + var_col) * (g_raw - 1), 0.7, 1.3)
+        c = m.mean(0) - g * s.mean(0)
+        c, g = c - c.mean(), g / g.mean()
+    return c, g, a
+
+
+def apply_stripe_pattern(stack, c, g, axis=-1):
+    """(stack - c) / g, line by line."""
+    shape = (1, 1, -1) if axis in (-1, 2) else (1, -1, 1)
+    return (stack - c.reshape(shape)) / g.reshape(shape)
+
+
+def stripe_excess(img, axis=-1, lo=20, hi=246, nb=(3, 8)):
+    """Diagnostic: power on the ky=0 line of the spectrum (kx = lo..hi bins) over the power of the neighbouring lines
+    (columns pattern; axis=-2: kx=0 line, rows). ~1 means no stripe pattern, >> 1 a fixed stripe pattern."""
+    n = img.shape[0]
+    w = np.outer(np.hanning(n), np.hanning(img.shape[1]))
+    f = np.abs(np.fft.fftshift(np.fft.fft2((img - img.mean()) * w))) ** 2
+    if axis in (-2, 0):
+        f = f.T
+    cy, cx = n // 2, img.shape[1] // 2
+    return f[cy, cx + lo:cx + hi].mean() / np.mean([f[cy + s * d, cx + lo:cx + hi].mean()
+                                                    for d in range(nb[0], nb[1]) for s in (-1, 1)])
+
+
 class PeakMaskRecon:
 
     def __init__(self, stack, n_angles, n_phases, pixel_size, na, wavelength, offset=100.0, threshold=0.85,
-                 mask='ramp'):
+                 mask='ramp', destripe='columns'):
         n, ny, nx = stack.shape
         if n != n_angles * n_phases:
             raise ValueError('stack has %d frames, expected %d x %d' % (n, n_angles, n_phases))
@@ -108,7 +163,14 @@ class PeakMaskRecon:
         self.nang, self.nph, self.dx0, self.na, self.wl = n_angles, n_phases, pixel_size, na, wavelength
         self.thr = threshold
         self.mask_kind = mask
-        self.raw = (stack.astype(np.float64) - offset).reshape(n_angles, n_phases, ny, nx)
+        raw = stack.astype(np.float64) - offset
+        self.stripe_excess_before = stripe_excess(raw.mean(0)) if destripe else None
+        if destripe:                                           # fixed stripe pattern of the camera chip
+            ax = -1 if destripe == 'columns' else -2
+            self.stripe_c, self.stripe_g, _ = estimate_stripe_pattern(raw, axis=ax)
+            raw = apply_stripe_pattern(raw, self.stripe_c, self.stripe_g, axis=ax)
+            self.stripe_excess_after = stripe_excess(raw.mean(0))
+        self.raw = raw.reshape(n_angles, n_phases, ny, nx)
         self.n0 = nx
         self.n = 2 * nx
         self.dx = pixel_size / 2
@@ -123,11 +185,18 @@ class PeakMaskRecon:
         self.H = otf_circ(self.kr, self.kc)
 
     # ---- helpers -------------------------------------------------------------------------------------------
-    def shifted_otf(self, k, m):
+    def grid(self, n=None):
+        """frequency grid of an n x n image (default: the interpolated image): radius [cycles/um], radius in bins, OTF"""
+        n = n or self.n
+        f = np.fft.fftfreq(n, self.dx)
+        kr = np.hypot(f[:, None], f[None, :])
+        return kr, kr * (n * self.dx), otf_circ(kr, self.kc)
+
+    def shifted_otf(self, k, m, n=None):
         """H(kappa - m f) on the FFT grid for pattern wave vector k (cycles per raw px)."""
         fm = m * np.hypot(*k) / self.dx0                     # cycles / um
         ang = np.arctan2(k[1], k[0])
-        f = np.fft.fftfreq(self.n, self.dx)
+        f = np.fft.fftfreq(n or self.n, self.dx)
         ky, kx = np.meshgrid(f, f, indexing='ij')
         return otf_circ(np.hypot(ky - fm * np.cos(ang), kx - fm * np.sin(ang)), self.kc)
 
@@ -161,10 +230,10 @@ class PeakMaskRecon:
         idc2 = np.sqrt((2.0 / self.nph ** 2) * np.einsum('ijk,ijk->jk', d, d))
         return a - alpha * a.mean(0) + idc2
 
-    def run(self, mu='auto', **kw):
+    def run(self, mu='auto', nsr_scale=4.0, tv_weight=0.02, edge='reflect', **kw):
         """prepare() (interpolation, patterns, masks, angle sums, modulation depth) followed by wiener()."""
         self.prepare(**kw)
-        self.wiener(mu)
+        self.wiener(mu, nsr_scale, tv_weight, edge)
         return self
 
     def prepare(self, keep_stacks=False, measure_modulation=True, p1=None, phase_mode='frame',
@@ -334,50 +403,72 @@ class PeakMaskRecon:
         msk = (self.bins >= band[0]) & (self.bins < band[1]) & (hs > 0.02) & (hp > 0.02)
         return float(np.abs((w1 * np.conj(w0))[msk].sum() / (w0 * np.conj(w0)).real[msk].sum()))
 
-    def effective_otf(self, a, orders=1):
+    def effective_otf(self, a, orders=1, n=None):
         """Transfer function of the summed masked image of angle a (normalised to T(0) = 1).
         Sum_j M_j(x) I_j(x) keeps, for every excitation harmonic m of the data, the mask harmonic -m:
             T(kappa) = sum_m w_m * r_m * H(kappa - m f),   r_m = p_m / 2  (r_0 = 1),
         w_m = Fourier coefficient of the binary mask, p_m = modulation depth of harmonic m."""
-        t = self.mask_harmonics(0) * self.H
+        t = self.mask_harmonics(0) * (self.H if n in (None, self.n) else self.grid(n)[2])
         r = {1: self.p1[a] / 2}
         for m in range(1, orders + 1):
             wr = self.mask_harmonics(m) * r.get(m, 0.0)
             if wr:
-                t = t + wr * (self.shifted_otf(self.k[a], m) + self.shifted_otf(self.k[a], -m))
+                t = t + wr * (self.shifted_otf(self.k[a], m, n) + self.shifted_otf(self.k[a], -m, n))
         return t / t.flat[0]
 
-    def anisotropic_otf(self, a, resolution):
+    def anisotropic_otf(self, a, resolution, n=None):
         """Analytic OTF of angle a with the given resolution [um] (= 1 / cutoff) along the pattern direction and the
         diffraction-limited cutoff 2NA/lambda perpendicular to it: the circular-aperture OTF with the coordinate
         along the pattern stretched by s = (1/resolution) / (2NA/lambda), i.e. an elliptical support.
         T(kappa) = H(sqrt((kappa_par / s)^2 + kappa_perp^2))."""
         s = (1.0 / resolution) / self.kc
-        f = np.fft.fftfreq(self.n, self.dx)
+        f = np.fft.fftfreq(n or self.n, self.dx)
         ky, kx = np.meshgrid(f, f, indexing='ij')
         d = np.array(self.k[a]) / np.hypot(*self.k[a])
         par = d[0] * ky + d[1] * kx
         perp = -d[1] * ky + d[0] * kx
         return otf_circ(np.hypot(par / s, perp), self.kc)
 
-    def transfer(self, a):
-        """Transfer function of the angle-a image used in the Wiener filter."""
-        return self.effective_otf(a) if self.otf_model == 'harmonic' else self.anisotropic_otf(a, self.resolution_along)
+    def transfer(self, a, n=None):
+        """Transfer function of the angle-a image used in the Wiener filter (on an n x n grid)."""
+        return (self.effective_otf(a, n=n) if self.otf_model == 'harmonic'
+                else self.anisotropic_otf(a, self.resolution_along, n))
 
-    def wiener(self, mu):
-        """Wiener combination of the angle images, see ``wiener_combine``."""
+    def wiener(self, mu, nsr_scale=4.0, tv_weight=0.02, edge='reflect', pad=64):
+        """Wiener combination of the angle images, see ``wiener_combine``, followed by ``finish``.
+        edge='reflect': the images are mirror-padded by ``pad`` pixels before the FFT (no taper, no dark border, no
+        wrap-around); 'taper': Tukey window."""
+        pad = pad if edge == 'reflect' else 0
+        nn = self.n + 2 * pad
         win = np.outer(tukey(self.n, 0.05), tukey(self.n, 0.05))
         fs, ts = [], []
         for a in range(self.nang):
             y = self.angle_sum[a]
             y = y / y.mean()                                          # common DC level: object DC = 1
-            fs.append(fft2(y * win, workers=WORKERS))
-            ts.append(self.transfer(a))
+            fs.append(fft2(np.pad(y, pad, mode='reflect') if pad else y * win, workers=WORKERS))
+            ts.append(self.transfer(a, nn))
         self.otf_eff = ts
-        self.S, self.otf_total, noise = wiener_combine(fs, ts, self.bins, mu, per_image_noise=False)
+        self.S, self.otf_total, noise = wiener_combine(fs, ts, self.grid(nn)[1], mu, per_image_noise=False,
+                                                       nsr_scale=nsr_scale)
         self.noise_power = float(np.mean(noise)) if noise is not None else None
-        self.final = np.real(ifft2(self.S, workers=WORKERS))
-        self.final *= self.up.mean()                                  # restore counts (offset-subtracted)
+        self.final = self.finish(self.S, pad, self.up.mean(), tv_weight)
+
+    def finish(self, S, pad, scale, tv_weight):
+        """Inverse transform, crop of the padding, restore the counts; then positivity-constrained TV denoising
+        (Chambolle, weight in units of the DC level; 0 = off) of the Wiener result."""
+        x = np.real(ifft2(S, workers=WORKERS))
+        x = x[pad:pad + self.n, pad:pad + self.n] * scale             # counts (offset-subtracted)
+        self.final_wiener = x
+        return tv_positive(x, scale, tv_weight)
+
+
+def tv_positive(x, scale, weight):
+    """Total-variation denoising (Chambolle) of x / scale with the given weight, then x >= 0. weight = 0: only x >= 0
+    is applied. Suppresses the noise texture and the negative ringing lobes of the Wiener deconvolution."""
+    if not weight:
+        return np.clip(x, 0, None)
+    from skimage.restoration import denoise_tv_chambolle
+    return np.clip(denoise_tv_chambolle(x / scale, weight=weight), 0, None) * scale
 
 
 def safe_divide(num, den, eps=1e-30):
@@ -389,7 +480,7 @@ def safe_divide(num, den, eps=1e-30):
     return out
 
 
-def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False):
+def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False, nsr_scale=1.0):
     """Wiener combination of images with known transfer functions:
         S = sum_i conj(T_i) F_i / n_i / (sum_i |T_i|^2 / n_i + 1 / P_S(kappa)).
     F_i: Fourier transform of image i (normalised to DC = 1), T_i: its transfer function (T(0) = 1), n_i: its noise
@@ -400,7 +491,7 @@ def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False):
     n = fs[0].shape[0]
     t2 = sum(np.abs(t) ** 2 for t in ts)
     if mu != 'auto':
-        return safe_divide(sum(np.conj(t) * f for t, f in zip(ts, fs)), t2 + mu ** 2), t2, None
+        return safe_divide(sum(np.conj(t) * f for t, f in zip(ts, fs)), t2 + nsr_scale * mu ** 2), t2, None
     # noise: bins outside every effective support but inside the band that still carries (interpolated) noise,
     # i.e. below the raw Nyquist frequency (bin n/4); beyond it the zero-padded spectrum holds no noise at all
     far = (t2 < 1e-4) & (bins < 0.97 * n / 4)
@@ -423,7 +514,7 @@ def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False):
     ps = (prof(pg) - 1) * nm / np.maximum(prof(u2) / len(fs) * nm, 1e-6)
     ps = np.convolve(np.maximum(ps, nm / 1e3), np.ones(5) / 5, mode='same')
     ps = np.minimum.accumulate(np.maximum(ps, nm / 1e3))               # object power decreases with frequency
-    s = safe_divide(sum(np.conj(x) * y for x, y in zip(u, g)), u2 + (nm / ps)[rb] / nm)
+    s = safe_divide(sum(np.conj(x) * y for x, y in zip(u, g)), u2 + nsr_scale * (nm / ps)[rb] / nm)
     return s, t2, noise
 
 
@@ -438,8 +529,8 @@ class MultiStackRecon:
           agree between the stacks and the sample did not move, see ``compare_patterns``."""
 
     def __init__(self, stacks, n_angles, n_phases, pixel_size, na, wavelength, offset=100.0, threshold=0.85,
-                 mask='ramp'):
-        self.args = (n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
+                 mask='ramp', destripe='columns'):
+        self.args = (n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask, destripe)
         self.stacks = stacks
         self.recs = [PeakMaskRecon(s, *self.args) for s in stacks]
         self.nstack = len(stacks)
@@ -469,29 +560,37 @@ class MultiStackRecon:
                                   for q in rep)
         return rep
 
-    def run(self, mode='combine', mu='auto', register=True, upsample=50, **kw):
+    def run(self, mode='combine', mu='auto', register=True, upsample=50, nsr_scale=4.0, tv_weight=0.02, edge='reflect',
+            pad=64, **kw):
         if mode == 'raw':
-            return self.run_raw(mu=mu, **kw)
+            return self.run_raw(mu=mu, nsr_scale=nsr_scale, tv_weight=tv_weight, edge=edge, **kw)
         for r in self.recs:
             r.prepare(**kw)
         self.rec = self.recs[0]
         self.shifts = [np.zeros(2)] + [self.register(r, upsample) if register else np.zeros(2) for r in self.recs[1:]]
         n = self.n
-        fy = np.fft.fftfreq(n)[:, None]
-        fx = np.fft.fftfreq(n)[None, :]
+        pad = pad if edge == 'reflect' else 0
+        nn = n + 2 * pad
+        fy = np.fft.fftfreq(nn)[:, None]
+        fx = np.fft.fftfreq(nn)[None, :]
+        fy0 = np.fft.fftfreq(n)[:, None]
+        fx0 = np.fft.fftfreq(n)[None, :]
         win = np.outer(tukey(n, 0.05), tukey(n, 0.05))
         fs, ts, self.angle_sum, wfs = [], [], [], []
         for r, d in zip(self.recs, self.shifts):
             ramp = np.exp(-2j * np.pi * (fy * d[0] + fx * d[1]))        # shift by +d (registers onto stack 0)
-            wfs.append(np.real(ifft2(fft2(r.wf, workers=WORKERS) * ramp, workers=WORKERS)))
+            ramp0 = np.exp(-2j * np.pi * (fy0 * d[0] + fx0 * d[1]))
+            wfs.append(np.real(ifft2(fft2(r.wf, workers=WORKERS) * ramp0, workers=WORKERS)))
             for a in range(self.nang):
                 y = r.angle_sum[a] / r.angle_sum[a].mean()
-                self.angle_sum.append(np.real(ifft2(fft2(y, workers=WORKERS) * ramp, workers=WORKERS)))
-                fs.append(fft2(y * win, workers=WORKERS) * ramp)
-                ts.append(r.transfer(a))
-        self.S, self.otf_total, noise = wiener_combine(fs, ts, self.rec.bins, mu, per_image_noise=True)
+                self.angle_sum.append(np.real(ifft2(fft2(y, workers=WORKERS) * ramp0, workers=WORKERS)))
+                fs.append(fft2(np.pad(y, pad, mode='reflect') if pad else y * win, workers=WORKERS) * ramp)
+                ts.append(r.transfer(a, nn))
+        self.S, self.otf_total, noise = wiener_combine(fs, ts, self.rec.grid(nn)[1], mu, per_image_noise=True,
+                                                       nsr_scale=nsr_scale)
         self.noise_power = None if noise is None else noise.reshape(self.nstack, self.nang).mean(1).tolist()
-        self.final = np.real(ifft2(self.S, workers=WORKERS)) * self.recs[0].up.mean()   # counts of stack 0 (reference)
+        self.final = self.rec.finish(self.S, pad, self.recs[0].up.mean(), tv_weight)   # counts of stack 0 (reference)
+        self.final_wiener = self.rec.final_wiener
         self.wf = np.mean(wfs, axis=0)
         self.p1 = np.array([r.p1 for r in self.recs])
         return self
@@ -510,13 +609,13 @@ class MultiStackRecon:
 
     def run_raw(self, mu='auto', normalise=True, **kw):
         """Average the raw frames (offset kept) of all stacks, then reconstruct the mean stack."""
-        offset = self.args[5]
+        offset = self.args[5]            # the mean stack is destriped again in PeakMaskRecon
         ref = (self.stacks[0].astype(np.float64) - offset).mean()
         mean = np.mean([(s.astype(np.float64) - offset) * (ref / (s.astype(np.float64) - offset).mean() if normalise else 1)
                         for s in self.stacks], axis=0) + offset
         self.rec = PeakMaskRecon(mean, *self.args)
         self.rec.run(mu=mu, **kw)
-        for name in ('final', 'wf', 'S', 'otf_total', 'noise_power', 'p1', 'angle_sum'):
+        for name in ('final', 'final_wiener', 'wf', 'S', 'otf_total', 'noise_power', 'p1', 'angle_sum'):
             setattr(self, name, getattr(self.rec, name))
         self.shifts = None
         return self
@@ -539,9 +638,15 @@ if __name__ == '__main__':
     wavelength = 0.5            # emission wavelength [um]
     offset = 100.0              # camera offset subtracted from the raw data
     threshold = 0.85            # keep pixels where the normalised sinusoidal pattern (0..1) >= threshold
+    destripe = 'columns'        # fixed stripe pattern of the camera: 'columns' (vertical stripes), 'rows' or None
     mask = 'ramp'               # 'binary': hard threshold (leaves a 10th-harmonic ripple in the 10-phase sum)
                                 # 'ramp': threshold, weighted linearly from 0 (threshold) to 1 (pattern peak)
     mu = 'auto'                 # 'auto': noise / object power estimated from the data; float: constant Wiener parameter
+    nsr_scale = 4.0             # multiplies the noise-to-signal term of the Wiener filter (the automatic estimate is
+                                # too low: on simulated data the error is smallest for 4-8); 1 = unscaled
+    tv_weight = 0.02            # positivity-constrained TV denoising of the Wiener result (units of the DC level), 0 = off;
+                                # mild on purpose: larger weights (>= 0.05) leave blocky 'staircase' patches in flat areas
+    edge = 'reflect'            # 'reflect': mirror padding before the FFT (no dark border), 'taper': Tukey window
     phase_mode = 'frame'        # pattern phase: 'frame' measured per frame, 'linear' linear fit, 'equal' equally spaced
     ghost_correction = 'subtract'   # unequally spaced frame phases leave a zero-order ghost in the sum of the masked frames:
                                     # 'subtract' removes it exactly, 'weights' balances the frame weights, None: plain sum
@@ -554,19 +659,23 @@ if __name__ == '__main__':
 
     kw = dict(p1=p1, phase_mode=phase_mode, lockin_alpha=lockin_alpha, ghost_correction=ghost_correction,
               otf_model=otf_model, resolution_along=resolution_along)
-    args = (n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask)
+    args = (n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask, destripe)
     out.mkdir(parents=True, exist_ok=True)
     stacks = [tf.imread(fn) for fn in fns]
     summary = dict(files=[str(f) for f in fns], pixel_size_um=pixel_size / 2, mask=mask, threshold=threshold,
-                   lockin_alpha=lockin_alpha, phase_mode=phase_mode, ghost_correction=ghost_correction,
-                   otf_model=otf_model, resolution_along=resolution_along, mu=mu)
+                   lockin_alpha=lockin_alpha, phase_mode=phase_mode, ghost_correction=ghost_correction, destripe=destripe,
+                   otf_model=otf_model, resolution_along=resolution_along, mu=mu, nsr_scale=nsr_scale,
+                   tv_weight=tv_weight, edge=edge)
     f32 = lambda x: np.asarray(x, np.float32)
 
     if len(stacks) == 1:
         rec = PeakMaskRecon(stacks[0], *args)
-        rec.run(keep_stacks=save_stacks, mu=mu, **kw)
+        rec.run(keep_stacks=save_stacks, mu=mu, nsr_scale=nsr_scale, tv_weight=tv_weight, edge=edge, **kw)
         checks = [rec.check_patterns()]
         recs = [rec]
+        if destripe:
+            summary.update(stripe_excess_before=rec.stripe_excess_before, stripe_excess_after=rec.stripe_excess_after,
+                           stripe_offset_rms_counts=float(rec.stripe_c.std()), stripe_gain_rms=float(rec.stripe_g.std()))
         summary.update(mask_fraction=rec.mask_fraction, frame_weights=rec.weights.round(4).tolist(),
                        p1=rec.p1.tolist(), patterns=rec.pinfo)
         if save_stacks:
@@ -580,7 +689,7 @@ if __name__ == '__main__':
             print('  stack %d angle %d: drift %.1f deg, offset %.1f deg (%.3f raw px), scatter %.1f deg'
                   % (q['stack'], q['angle'], q['drift_deg'], q['offset_deg'], q['offset_px'], q['scatter_deg']))
         print('raw averaging is %s' % ('safe' if rec.raw_average_ok else 'NOT safe (use multi_mode = "combine")'))
-        rec.run(mode=multi_mode, mu=mu, register=register, **kw)
+        rec.run(mode=multi_mode, mu=mu, register=register, nsr_scale=nsr_scale, tv_weight=tv_weight, edge=edge, **kw)
         recs = rec.recs if multi_mode == 'combine' else [rec.rec]
         checks = [r.check_patterns() for r in recs]
         summary.update(multi_mode=multi_mode, register=register, pattern_comparison=comparison,
@@ -601,6 +710,7 @@ if __name__ == '__main__':
     tf.imwrite(out / 'widefield_interp.tif', f32(rec.wf), photometric='minisblack')
     tf.imwrite(out / 'angle_sums.tif', f32(rec.angle_sum), photometric='minisblack')
     tf.imwrite(out / 'wiener_combined.tif', f32(rec.final), photometric='minisblack')
+    tf.imwrite(out / 'wiener_combined_unfiltered.tif', f32(rec.final_wiener), photometric='minisblack')
     tf.imwrite(out / 'effective_otf_total.tif', f32(np.fft.fftshift(rec.otf_total)), photometric='minisblack')
     tf.imwrite(out / 'recon_spectrum_log.tif', f32(np.log10(np.abs(np.fft.fftshift(rec.S)) + 1e-6)),
                photometric='minisblack')
