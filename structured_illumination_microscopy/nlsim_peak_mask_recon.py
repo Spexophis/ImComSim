@@ -380,6 +380,15 @@ class PeakMaskRecon:
         self.final *= self.up.mean()                                  # restore counts (offset-subtracted)
 
 
+def safe_divide(num, den, eps=1e-30):
+    """num / den that gives 0 where |den| <= eps (or den is not finite) instead of inf / nan and a RuntimeWarning."""
+    num = np.asarray(num)
+    den = np.asarray(den)
+    out = np.zeros(np.broadcast(num, den).shape, dtype=np.result_type(num, den, np.float64))
+    np.divide(num, den, out=out, where=np.isfinite(den) & (np.abs(den) > eps))
+    return out
+
+
 def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False):
     """Wiener combination of images with known transfer functions:
         S = sum_i conj(T_i) F_i / n_i / (sum_i |T_i|^2 / n_i + 1 / P_S(kappa)).
@@ -391,7 +400,7 @@ def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False):
     n = fs[0].shape[0]
     t2 = sum(np.abs(t) ** 2 for t in ts)
     if mu != 'auto':
-        return sum(np.conj(t) * f for t, f in zip(ts, fs)) / (t2 + mu ** 2), t2, None
+        return safe_divide(sum(np.conj(t) * f for t, f in zip(ts, fs)), t2 + mu ** 2), t2, None
     # noise: bins outside every effective support but inside the band that still carries (interpolated) noise,
     # i.e. below the raw Nyquist frequency (bin n/4); beyond it the zero-padded spectrum holds no noise at all
     far = (t2 < 1e-4) & (bins < 0.97 * n / 4)
@@ -400,6 +409,9 @@ def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False):
     noise = np.array([np.mean(np.abs(f[far]) ** 2) for f in fs])
     if not per_image_noise:
         noise = np.full(len(fs), noise.mean())
+    # a noise power of 0 (e.g. noise-free or constant data) or nan would divide by zero below: use a tiny floor
+    tiny = 1e-12 * max(float(np.mean([np.mean(np.abs(f) ** 2) for f in fs])), 1e-300)
+    noise = np.maximum(np.nan_to_num(noise, nan=0.0, posinf=0.0), tiny)
     g = [f / np.sqrt(z) for f, z in zip(fs, noise)]                    # whitened data and transfer functions
     u = [t / np.sqrt(z) for t, z in zip(ts, noise)]
     u2 = sum(np.abs(x) ** 2 for x in u)
@@ -411,7 +423,7 @@ def wiener_combine(fs, ts, bins, mu='auto', per_image_noise=False):
     ps = (prof(pg) - 1) * nm / np.maximum(prof(u2) / len(fs) * nm, 1e-6)
     ps = np.convolve(np.maximum(ps, nm / 1e3), np.ones(5) / 5, mode='same')
     ps = np.minimum.accumulate(np.maximum(ps, nm / 1e3))               # object power decreases with frequency
-    s = sum(np.conj(x) * y for x, y in zip(u, g)) / (u2 + (nm / ps)[rb] / nm)
+    s = safe_divide(sum(np.conj(x) * y for x, y in zip(u, g)), u2 + (nm / ps)[rb] / nm)
     return s, t2, noise
 
 
