@@ -90,6 +90,42 @@ def estimate_patterns(raw, min_period=3.0, max_period=12.0):
     return np.array(ks), np.array(phases), np.array(phases_eq), np.array(phases_fr), info
 
 
+def load_pattern_params(fn):
+    """Read a .json written by save_pattern_params: list of dicts, one per angle (the overlap map as an array)."""
+    rows = json.loads(Path(fn).read_text())['angles']
+    for r in rows:
+        if 'overlap_map' in r:
+            r['overlap_map'] = np.array(r['overlap_map'])
+    return rows
+
+
+def patterns_from_params(rows, n_phases, ny, nx, pixel_size):
+    """Pattern parameters of loaded rows (load_pattern_params: angle_rad, spacing_um, frame_phases_rad per angle), as the output of
+    estimate_patterns. Wave vector [cycles per RAW pixel, axis0 / axis1] = pixel_size (cos, sin)(angle) / spacing. The loaded
+    frame phases have their origin at the image centre (sim2d_recon_m: x = i - n / 2); they are moved to pixel 0, the origin of
+    the pattern here:  phase0 = phase_centre - pi (k0 ny + k1 nx). The phases are valid for the stack they were measured on."""
+    j = np.arange(n_phases)
+    ks, phases, phases_eq, phases_fr, info = [], [], [], [], []
+    for a, r in enumerate(rows):
+        if len(r.get('frame_phases_rad', [])) != n_phases:
+            raise ValueError('angle %d: the file holds no frame phases for %d phases (save them with phases=...)' % (a, n_phases))
+        k0 = pixel_size * np.cos(r['angle_rad']) / r['spacing_um']
+        k1 = pixel_size * np.sin(r['angle_rad']) / r['spacing_um']
+        phi = np.asarray(r['frame_phases_rad'], float) - np.pi * (k0 * ny + k1 * nx)
+        psi = np.unwrap(np.angle(np.exp(1j * (phi - 2 * np.pi * j / n_phases))))
+        eps, phi0 = np.polyfit(j, psi, 1)
+        res = psi - (phi0 + eps * j)
+        ks.append((k0, k1))
+        phases.append(2 * np.pi * j / n_phases + phi0 + eps * j)
+        phases_eq.append(2 * np.pi * j / n_phases + phi0 + eps * (n_phases - 1) / 2)
+        phases_fr.append(2 * np.pi * j / n_phases + psi)
+        info.append(dict(angle=a, k_cycles_per_px=(k0, k1), period_px=1 / np.hypot(k0, k1),
+                         direction_deg=float(np.degrees(np.arctan2(k1, k0))), phi0=float(phi0),
+                         step_error_deg=float(np.degrees(eps)), phase_resid_rms_deg=float(np.degrees(res.std())),
+                         source='loaded'))
+    return np.array(ks), np.array(phases), np.array(phases_eq), np.array(phases_fr), info
+
+
 def otf_circ(kr, kc):
     """Diffraction-limited incoherent OTF (circular pupil), kr / kc = radius / cutoff."""
     r = np.clip(kr / kc, 0, 1)
@@ -237,10 +273,23 @@ class PeakMaskRecon:
         return self
 
     def prepare(self, keep_stacks=False, measure_modulation=True, p1=None, phase_mode='frame',
-                lockin_alpha=None, ghost_correction='subtract', otf_model='harmonic', resolution_along=0.040):
+                lockin_alpha=None, ghost_correction='subtract', otf_model='harmonic', resolution_along=0.040,
+                patterns=None, refine=None):
+        """patterns: None = the pattern parameters are estimated from the data (estimate_patterns). A .json written by
+        save_pattern_params (or its rows from load_pattern_params): the wave vectors and per-frame phases are taken from it
+        (patterns_from_params), nothing is estimated. refine: the refinement pass of the frame phases (refine_frame_phases,
+        phase_mode 'frame'); None = only if the patterns are estimated, loaded phases are used as they are."""
         self.otf_model, self.resolution_along = otf_model, resolution_along
-        # pattern parameters come from the plain offset-subtracted data
-        self.k, self.phase_lin, self.phase_eq, self.phase_frame, self.pinfo = estimate_patterns(self.raw)
+        if patterns is None:
+            # pattern parameters come from the plain offset-subtracted data
+            self.k, self.phase_lin, self.phase_eq, self.phase_frame, self.pinfo = estimate_patterns(self.raw)
+        else:
+            rows = patterns if isinstance(patterns, (list, tuple)) else load_pattern_params(patterns)
+            if len(rows) != self.nang:
+                raise ValueError('pattern parameters of %d angles loaded, the stack has %d' % (len(rows), self.nang))
+            self.k, self.phase_lin, self.phase_eq, self.phase_frame, self.pinfo = patterns_from_params(
+                rows, self.nph, self.n0, self.n0, self.dx0)
+        refine = patterns is None if refine is None else refine
         data = self.raw if lockin_alpha is None else np.stack([self.lockin_demod(a, lockin_alpha)
                                                                for a in range(self.nang)])
         self.up = fft_upsample2(data.reshape(-1, self.n0, self.n0)).reshape(self.nang, self.nph, self.n, self.n)
@@ -248,7 +297,7 @@ class PeakMaskRecon:
         # the patterns then overlap the pattern in each frame. 'equal': equally spaced steps, which cancel the
         # zero-order ghost of the 10-phase sum exactly but misplace the mask by the step error of each frame.
         self.phase = dict(frame=self.phase_frame, equal=self.phase_eq, linear=self.phase_lin)[phase_mode]
-        if phase_mode == 'frame':
+        if phase_mode == 'frame' and refine:
             self.refine_frame_phases()
         self.angle_sum, self.patterns, self.filtered = [], [], []
         frac = []
@@ -564,8 +613,11 @@ class MultiStackRecon:
             pad=64, **kw):
         if mode == 'raw':
             return self.run_raw(mu=mu, nsr_scale=nsr_scale, tv_weight=tv_weight, edge=edge, **kw)
-        for r in self.recs:
-            r.prepare(**kw)
+        pats = kw.pop('patterns', None)             # one source (file or rows) per stack, or None
+        if pats is not None and len(pats) != self.nstack:
+            raise ValueError('patterns: one parameter file per stack (%d stacks)' % self.nstack)
+        for i, r in enumerate(self.recs):
+            r.prepare(patterns=None if pats is None else pats[i], **kw)
         self.rec = self.recs[0]
         self.shifts = [np.zeros(2)] + [self.register(r, upsample) if register else np.zeros(2) for r in self.recs[1:]]
         n = self.n
@@ -655,17 +707,20 @@ if __name__ == '__main__':
     resolution_along = 0.080    # [um] resolution along the pattern direction for otf_model='anisotropic'
     lockin_alpha = None         # lock-in demodulation of the raw data before masking, e.g. 0.8 (None: off)
     p1 = None                   # fix the first-order modulation depth instead of measuring it
+    patterns_file = None        # pattern parameters (wave vectors, per-frame phases) from a .json of save_pattern_params (sim2d_recon_m),
+                                # e.g. r"pattern_params.json": used instead of estimating them from the data (the frame phases are then
+                                # not refined). Several stacks: a list with one file per stack. None: estimate from the data.
     save_stacks = True          # single stack only: also write the 60 patterns and the 60 masked frames
 
     kw = dict(p1=p1, phase_mode=phase_mode, lockin_alpha=lockin_alpha, ghost_correction=ghost_correction,
-              otf_model=otf_model, resolution_along=resolution_along)
+              otf_model=otf_model, resolution_along=resolution_along, patterns=patterns_file)
     args = (n_angles, n_phases, pixel_size, na, wavelength, offset, threshold, mask, destripe)
     out.mkdir(parents=True, exist_ok=True)
     stacks = [tf.imread(fn) for fn in fns]
     summary = dict(files=[str(f) for f in fns], pixel_size_um=pixel_size / 2, mask=mask, threshold=threshold,
                    lockin_alpha=lockin_alpha, phase_mode=phase_mode, ghost_correction=ghost_correction, destripe=destripe,
                    otf_model=otf_model, resolution_along=resolution_along, mu=mu, nsr_scale=nsr_scale,
-                   tv_weight=tv_weight, edge=edge)
+                   tv_weight=tv_weight, edge=edge, patterns_file=patterns_file)
     f32 = lambda x: np.asarray(x, np.float32)
 
     if len(stacks) == 1:
