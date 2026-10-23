@@ -6,6 +6,8 @@ Ruizhe Lin 04/15/2019
 Performance revision (2026)
 """
 
+import csv
+import json
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -45,6 +47,50 @@ def ifft2(a, overwrite=False):
     if _SCIPY_FFT:
         return _ifft2(a, workers=_WORKERS, overwrite_x=overwrite)
     return _ifft2(a)
+
+
+def save_pattern_params(xs, fn, aps=None, phases=None, maps=True):
+    """Store the pattern parameters of all angles in a readable file.
+    xs: list of mapoverlap results, one per angle: (angle [rad], spacing [um], max overlap, overlap map (nps+1, nps+1)).
+    aps (optional): list of getoverlap results (magnitude, phase [rad]) per angle. phases (optional): per-frame phases [rad] per angle
+    (estimate_phases; an entry may be None). fn: '.json' (everything, maps included unless maps=False) or '.csv' (one row per angle
+    with the scalars and the frame phases; no maps). Returns the path."""
+    fn = Path(fn)
+    rows = []
+    for i, x in enumerate(xs):
+        r = dict(angle_index=i, angle_rad=float(x[0]), angle_deg=float(np.degrees(x[0])), spacing_um=float(x[1]),
+                 pattern_frequency_per_um=float(1.0 / x[1]), overlap_max=float(x[2]))
+        if aps is not None:
+            r.update(overlap_magnitude=float(aps[i][0]), overlap_phase_rad=float(aps[i][1]),
+                     overlap_phase_deg=float(np.degrees(aps[i][1])))
+        if phases is not None and phases[i] is not None:
+            r['frame_phases_rad'] = [float(v) for v in np.asarray(phases[i]).ravel()]
+        if maps and len(x) > 3 and fn.suffix.lower() == '.json':
+            r['overlap_map'] = np.asarray(x[3], float).tolist()
+        rows.append(r)
+    if fn.suffix.lower() == '.json':
+        fn.write_text(json.dumps(dict(angles=rows), indent=2))
+    elif fn.suffix.lower() == '.csv':
+        nph = max((len(r.get('frame_phases_rad', [])) for r in rows), default=0)
+        cols = [k for k in rows[0] if k != 'frame_phases_rad'] + ['phase_%d_rad' % j for j in range(nph)]
+        with open(fn, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            for r in rows:
+                ph = r.get('frame_phases_rad', [])
+                w.writerow([r.get(k, '') for k in cols[:len(cols) - nph]] + ph + [''] * (nph - len(ph)))
+    else:
+        raise ValueError("fn must end with .json or .csv")
+    return fn
+
+
+def load_pattern_params(fn):
+    """Read a .json written by save_pattern_params: list of dicts, one per angle (the overlap map as an array)."""
+    rows = json.loads(Path(fn).read_text())['angles']
+    for r in rows:
+        if 'overlap_map' in r:
+            r['overlap_map'] = np.array(r['overlap_map'])
+    return rows
 
 
 class SIM_RECON:
@@ -518,6 +564,7 @@ if __name__ == '__main__':
     p.radius = 4.0 * 1024 * 0.054
     individual_phases = True    # phase of every frame as in fairSIM (autocorrelation, Wicker et al.), then separate with them;
                                 # False: equally spaced phases, the offset is taken from getoverlap
+    xs, aps = [], []            # first-order result of every angle, stored at the end (save_pattern_params)
     p.init_recon()
     p.separate(0, True)
     p.shift0()
@@ -532,6 +579,8 @@ if __name__ == '__main__':
     x2 = p.mapoverlap(2, x2[0], x2[1], nps=10, r_ang=0.005, r_sp=0.005)
     a1 = p.getoverlap(1, x1[0], x1[1])
     a2 = p.getoverlap(3, x2[0], x2[1])
+    xs.append(x1)
+    aps.append(a1)
     p.add_recon(1, x1[0], x1[1], -a1[1], 0.8, False, False)
     p.add_recon(2, x2[0], x2[1], -a2[1], 0.3, False, False)
     p.separate(1, True)
@@ -547,11 +596,14 @@ if __name__ == '__main__':
     x2 = p.mapoverlap(2, x2[0], x2[1], nps=10, r_ang=0.005, r_sp=0.005)
     a1 = p.getoverlap(1, x1[0], x1[1])
     a2 = p.getoverlap(3, x2[0], x2[1])
+    xs.append(x1)
+    aps.append(a1)
     p.add_recon(1, x1[0], x1[1], -a1[1], 0.8, False, False)
     p.add_recon(2, x2[0], x2[1], -a2[1], 0.3, False, False)
     p.release_buffers()
     p.finish_recon()
     p.save_results(r'C:\Users\Ruiz\Desktop\New folder (4)')
+    save_pattern_params(xs, r'C:\Users\Ruiz\Desktop\New folder (4)\pattern_params.json', aps, p.phases)
 
     import heissian_deconv
     heissian_deconv.attach(SIM_RECON)
