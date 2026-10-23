@@ -115,7 +115,9 @@ class SIM_RECON:
         self.getpsf()
         self.meshgrid()
 
-        self.eps = 0.8
+        self.eps = 0.8                          # lock-in alpha of separate(..., lockin=True), or its starting value if lockin_tol
+        self.lockin_tol = None                  # None: eps as it is. A number: alpha fitted per angle (lockin_fit_alpha), e.g. 1e-3
+        self.lockin_alphas = {}
         self.mu = 0.02
         self.cutoff = 0.04
         self.strength = 0.99
@@ -259,6 +261,59 @@ class SIM_RECON:
         idc2 = np.sqrt((2.0 / self.nph ** 2) * np.einsum('ijk,ijk->jk', d, d))
         return a - alpha * a.mean(0) + idc2
 
+    def lockin_fit_alpha(self, ang, alpha0, tol=1e-3, alpha_max=1.0, max_iter=60, step=0.05):
+        """Iterate alpha of ``lockin_demod`` for one angle, starting from ``alpha0``, until the demodulated stack has
+        no negative value and its minimum lies just above zero: 0 <= min <= tol * mean(raw). The minimum falls
+        monotonically with alpha, so the search brackets the zero crossing (alpha is decreased if the minimum at
+        ``alpha0`` is negative, increased in steps of ``step`` if it is higher than the tolerance) and bisects. The
+        returned alpha is always on the non-negative side. alpha is limited to [0, alpha_max]."""
+        a = self.img[ang]
+        base = self.lockin_demod(ang, 0.0)                    # a + modulation amplitude (independent of alpha)
+        m = a.mean(0)
+        tol_abs = tol * float(a.mean())
+        low = lambda al: float((base - al * m).min())         # minimum of the demodulated stack
+        if low(0.0) < 0:                                      # negative even without removing anything
+            print('lockin angle %d: minimum is negative even at alpha = 0 (%.3g); alpha = 0 used' % (ang, low(0.0)))
+            return 0.0
+        alpha = min(max(alpha0, 0.0), alpha_max)
+        v = low(alpha)
+        if 0 <= v <= tol_abs:
+            return alpha
+        if v < 0:
+            lo, hi = 0.0, alpha
+        else:
+            lo = alpha
+            hi = None
+            while lo < alpha_max:                             # climb until the minimum turns negative
+                t = min(lo + step, alpha_max)
+                if low(t) < 0:
+                    hi = t
+                    break
+                lo = t
+                if low(lo) <= tol_abs:
+                    return lo
+            if hi is None:                                    # still non-negative at alpha_max
+                return alpha_max
+        for _ in range(max_iter):
+            mid = 0.5 * (lo + hi)
+            v = low(mid)
+            if v < 0:
+                hi = mid
+            else:
+                lo = mid
+                if v <= tol_abs:
+                    break
+        return lo
+
+    def lockin_alpha(self, ang):
+        """alpha used by separate(..., lockin=True) for an angle: self.eps as it is (lockin_tol None), or fitted by
+        lockin_fit_alpha starting from self.eps (cached per angle)."""
+        if self.lockin_tol is None:
+            return self.eps
+        if ang not in self.lockin_alphas:
+            self.lockin_alphas[ang] = self.lockin_fit_alpha(ang, self.eps, self.lockin_tol)
+        return self.lockin_alphas[ang]
+
     def _modulation(self, kx, ky, dtype, out=None, exact=False):
         if exact or self.exact_modulation:
             ysh = np.exp(2j * np.pi * (kx * self.xv + ky * self.yv))
@@ -340,7 +395,7 @@ class SIM_RECON:
         Nw = self.nx
         mat = self.sepmatrix(self.phases[nangle] if phases is None else phases)
         if lockin:
-            data = self.lockin_demod(nangle, self.eps)
+            data = self.lockin_demod(nangle, self.lockin_alpha(nangle))
             outr = np.dot(mat, data.reshape(self.nph, Nw ** 2))
         else:
             outr = np.dot(mat, self.img[nangle].reshape(self.nph, Nw ** 2))
