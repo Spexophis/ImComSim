@@ -268,6 +268,28 @@ class SIM_RECON:
         self.phases[nangle] = phi
         return phi
 
+    def pattern_stack(self, nangle, angle, spacing, scale=1, dtype=np.float32, phases=None):
+        """Stack of the illumination patterns of an angle, in the convention of estimate_phases / getoverlap / shift:
+            pattern_j(x, y) = 0.5 * (1 + cos(2 pi (fx X + fy Y) + phases[j])),   0 .. 1
+            fx = dx cos(angle) / spacing,  fy = dx sin(angle) / spacing   [cycles per RAW pixel, axis 0 / axis 1],
+        X = i - nx / 2, Y = k - ny / 2 [raw pixels]: the origin of the pattern phase is the image centre.
+        angle [rad], spacing [um] (period of the first order) as in mapoverlap. phases: pattern phase of every frame [rad]; None =
+        the phases stored by estimate_phases for this angle, or equally spaced (offset 0) if there are none. scale: the grid is
+        scale times finer than the raw one (scale=2: the half-pixel grid of the reconstruction, sample i at raw position i / scale,
+        size nx * scale); dtype np.uint8 gives 0..255. Returns (nph, nx * scale, ny * scale)."""
+        if phases is None:
+            phases = self.phases[nangle] if self.phases[nangle] is not None else 2 * np.pi * np.arange(self.nph) / self.nph
+        fx = self.dx * np.cos(angle) / spacing
+        fy = self.dx * np.sin(angle) / spacing
+        X = (np.arange(int(self.nx * scale)) / scale - self.nx / 2)[:, None]
+        Y = (np.arange(int(self.ny * scale)) / scale - self.ny / 2)[None, :]
+        carrier = 2 * np.pi * (fx * X + fy * Y)
+        out = np.empty((len(phases), carrier.shape[0], carrier.shape[1]), dtype)
+        for j, ph in enumerate(phases):
+            pat = 0.5 * (1 + np.cos(carrier + ph))
+            out[j] = np.round(pat * 255) if np.issubdtype(np.dtype(dtype), np.integer) else pat
+        return out
+
     def separate(self, nangle, lockin=False, phases=None):
         Nw = self.nx
         mat = self.sepmatrix(self.phases[nangle] if phases is None else phases)
