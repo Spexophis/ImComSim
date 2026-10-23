@@ -63,6 +63,7 @@ class SIM_RECON:
         self._zsp_cache = {}
         self._support_cache = {}
         self._sepmat = None
+        self.phases = [None] * nangles          # per-frame pattern phases of every angle (estimate_phases); None = equally spaced
         self.raps = self.raps_stack(img_stack, "tukey", np.float64, True)
         self.img = img_stack.reshape(self.nang, self.nph, self.nx, self.ny).astype(np.float64)
         self.getpsf()
@@ -176,7 +177,20 @@ class SIM_RECON:
         self._zsp_cache.clear()
         self._support_cache.clear()
 
-    def sepmatrix(self):
+    def sepmatrix(self, phases=None):
+        """Band separation matrix. phases=None: equally spaced phases (cached). phases: the measured pattern phase of every
+        frame [rad] (estimate_phases): least-squares separation of  I_j = c0 + sum_o 2 (R_o cos(o phi_j) + I_o sin(o phi_j)),
+        the same rows and normalisation as the equally spaced matrix (identical to it for phi_j = 2 pi j / nph), so that the
+        zero order does not leak into the first order when the phase steps are not equal."""
+        if phases is not None:
+            phi = np.asarray(phases, dtype=np.float64)
+            no = int((self.norders + 1) / 2) - 1
+            cols = [np.ones(self.nph)]
+            for order in range(1, no + 1):
+                cols += [2.0 * np.cos(order * phi), 2.0 * np.sin(order * phi)]
+            inv = np.linalg.pinv(np.array(cols).T)
+            inv[1:] *= 2.0
+            return inv.astype(np.float32)
         if self._sepmat is not None:
             return self._sepmat
         nphases = self.nph
@@ -225,9 +239,38 @@ class SIM_RECON:
             sy -= 2 * Nw                        # against Nw = self.nx
         return sx, sy
 
-    def separate(self, nangle, lockin=False):
+    def _otf_raw(self):
+        """OTF (from the PSF of this object, DC = 1) on the frequency grid of the raw frames."""
+        h = np.abs(fft2(self.psf))
+        ix = np.rint(np.fft.fftfreq(self.nx) * self.nx).astype(int) % (2 * self.nx)   # a raw bin has the same frequency on the
+        iy = np.rint(np.fft.fftfreq(self.ny) * self.ny).astype(int) % (2 * self.ny)   # 2x interpolated grid: same bin number
+        return h[np.ix_(ix, iy)] / h[0, 0]
+
+    def estimate_phases(self, nangle, angle, spacing):
+        """Pattern phase of every raw frame of an angle, as fairSIM estimateAbsolutePhases (Wicker et al., autocorrelation):
+        every frame is weighted with the OTF and autocorrelated at the pattern frequency,
+            z_j = sum_k conj(A_j(k)) A_j(k + f) = N sum_x a_j(x)^2 exp(-2 pi i f.x),   a_j = OTF-weighted frame,
+        whose phase is the phase of the pattern in this frame (the zero order of the image correlates with its first order
+        shifted by f). angle [rad] and spacing [um] (period of the first order) are those of mapoverlap / getoverlap, the
+        origin of the pattern phase is the image centre, as for the shifted bands. The phases are stored (used by
+        separate from now on) and returned: 2 pi j / nph + unwrapped deviation. The object's own spectrum at f adds a phase
+        bias that is small for a strongly modulated pattern."""
+        fx = self.dx * np.cos(angle) / spacing                   # pattern frequency [cycles / raw pixel], axis 0
+        fy = self.dx * np.sin(angle) / spacing                   # axis 1
+        w = np.outer(tukey(self.nx, alpha=self.eta), tukey(self.ny, alpha=self.eta))
+        frames = self.img[nangle] * w
+        a = np.real(_ifft2(_fft2(frames, axes=(-2, -1), **_FFT_KW) * self._otf_raw(), axes=(-2, -1), **_FFT_KW))
+        ex = np.exp(-2j * np.pi * fx * (np.arange(self.nx) - self.nx / 2))
+        ey = np.exp(-2j * np.pi * fy * (np.arange(self.ny) - self.ny / 2))
+        z = np.array([ex @ (aj * aj) @ ey for aj in a])
+        j = np.arange(self.nph)
+        phi = 2 * np.pi * j / self.nph + np.unwrap(np.angle(z * np.exp(-2j * np.pi * j / self.nph)))
+        self.phases[nangle] = phi
+        return phi
+
+    def separate(self, nangle, lockin=False, phases=None):
         Nw = self.nx
-        mat = self.sepmatrix()
+        mat = self.sepmatrix(self.phases[nangle] if phases is None else phases)
         if lockin:
             data = self.lockin_demod(nangle, self.eps)
             outr = np.dot(mat, data.reshape(self.nph, Nw ** 2))
@@ -451,11 +494,18 @@ if __name__ == '__main__':
     img = tf.imread(fns)
     p = SIM_RECON(img, 2, 6, 5, 0.054, 0.505, 1.3)
     p.radius = 4.0 * 1024 * 0.054
+    individual_phases = True    # phase of every frame as in fairSIM (autocorrelation, Wicker et al.), then separate with them;
+                                # False: equally spaced phases, the offset is taken from getoverlap
     p.init_recon()
     p.separate(0, True)
     p.shift0()
     x1 = p.mapoverlap(1, 1.57 + 1.538, 0.246 * 2, nps=8, r_ang=0.04, r_sp=0.04)
     x1 = p.mapoverlap(1, x1[0], x1[1], nps=10, r_ang=0.005, r_sp=0.005)
+    if individual_phases:
+        p.estimate_phases(0, x1[0], x1[1])
+        p.separate(0, True)
+        p.shift0()
+        x1 = p.mapoverlap(1, x1[0], x1[1], nps=10, r_ang=0.005, r_sp=0.005)
     x2 = p.mapoverlap(2, x1[0], x1[1] / 2, nps=8, r_ang=0.04, r_sp=0.04)
     x2 = p.mapoverlap(2, x2[0], x2[1], nps=10, r_ang=0.005, r_sp=0.005)
     a1 = p.getoverlap(1, x1[0], x1[1])
@@ -466,6 +516,11 @@ if __name__ == '__main__':
     p.shift0()
     x1 = p.mapoverlap(1, 1.57 - 0.034, 0.245 * 2, nps=8, r_ang=0.04, r_sp=0.04)
     x1 = p.mapoverlap(1, x1[0], x1[1], nps=10, r_ang=0.005, r_sp=0.005)
+    if individual_phases:
+        p.estimate_phases(1, x1[0], x1[1])
+        p.separate(1, True)
+        p.shift0()
+        x1 = p.mapoverlap(1, x1[0], x1[1], nps=10, r_ang=0.005, r_sp=0.005)
     x2 = p.mapoverlap(2, x1[0], x1[1] / 2, nps=8, r_ang=0.04, r_sp=0.04)
     x2 = p.mapoverlap(2, x2[0], x2[1], nps=10, r_ang=0.005, r_sp=0.005)
     a1 = p.getoverlap(1, x1[0], x1[1])
